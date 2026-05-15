@@ -30,12 +30,30 @@ const VALID = {
 };
 
 const TIME_ZONE_CHOICES = [
-  ["utc", "🌐 UTC", "UTC"],
-  ["asia_seoul", "🇰🇷 Seoul", "Asia/Seoul"],
-  ["america_los_angeles", "🇺🇸 Los Angeles", "America/Los_Angeles"],
-  ["america_new_york", "🇺🇸 New York", "America/New_York"],
-  ["europe_london", "🇬🇧 London", "Europe/London"],
-  ["europe_berlin", "🇩🇪 Berlin", "Europe/Berlin"]
+  ["utc_m11", "UTC-11", "Etc/GMT+11"],
+  ["utc_m10", "UTC-10", "Etc/GMT+10"],
+  ["utc_m09", "UTC-09", "Etc/GMT+9"],
+  ["utc_m08", "UTC-08", "Etc/GMT+8"],
+  ["utc_m07", "UTC-07", "Etc/GMT+7"],
+  ["utc_m06", "UTC-06", "Etc/GMT+6"],
+  ["utc_m05", "UTC-05", "Etc/GMT+5"],
+  ["utc_m04", "UTC-04", "Etc/GMT+4"],
+  ["utc_m03", "UTC-03", "Etc/GMT+3"],
+  ["utc_m02", "UTC-02", "Etc/GMT+2"],
+  ["utc_m01", "UTC-01", "Etc/GMT+1"],
+  ["utc", "UTC+00", "UTC"],
+  ["utc_p01", "UTC+01", "Etc/GMT-1"],
+  ["utc_p02", "UTC+02", "Etc/GMT-2"],
+  ["utc_p03", "UTC+03", "Etc/GMT-3"],
+  ["utc_p04", "UTC+04", "Etc/GMT-4"],
+  ["utc_p05", "UTC+05", "Etc/GMT-5"],
+  ["utc_p06", "UTC+06", "Etc/GMT-6"],
+  ["utc_p07", "UTC+07", "Etc/GMT-7"],
+  ["utc_p08", "UTC+08", "Etc/GMT-8"],
+  ["utc_p09", "UTC+09", "Etc/GMT-9"],
+  ["utc_p10", "UTC+10", "Etc/GMT-10"],
+  ["utc_p11", "UTC+11", "Etc/GMT-11"],
+  ["utc_p12", "UTC+12", "Etc/GMT-12"]
 ];
 
 const LOCALE_CHOICES = [
