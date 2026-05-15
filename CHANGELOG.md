@@ -2,6 +2,15 @@
 
 All notable public changes are documented here.
 
+## 1.0.2 - 2026-05-15
+
+- Added locale-based Telegram UI translations under `src/locales/*.json`.
+- Added a translation guide and locale validation command for contributor PRs.
+- Synced Telegram command-menu descriptions with the selected UI language.
+- Expanded time zone settings into a hierarchical region/UTC-offset menu.
+- Normalized Back buttons so they appear at the bottom of control panels.
+- Added real Telegram screenshots to the README.
+
 ## 1.0.1 - 2026-05-15
 
 - Fixed slash-prefixed non-command text handling so paths like `/home/...` are
