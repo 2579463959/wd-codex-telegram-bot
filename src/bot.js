@@ -3096,6 +3096,7 @@ async function sendPanel(ctx, panel, options = {}) {
     keyboard = mainPanelKeyboard(chatKey);
   }
 
+  keyboard = withPreviousPanelButton(keyboard, previousPanelFor(panel));
   if (edit) return editOrReplyHtml(ctx, html, keyboard);
   return replyHtml(ctx, html, keyboard);
 }
@@ -3276,6 +3277,7 @@ function mainPanelKeyboard(chatKey) {
 
 function statusKeyboard(chatKey) {
   const rows = [
+    [{ text: `← ${t("back")}`, callback_data: "p:main" }],
     [
       { text: t("refresh"), callback_data: "p:status" },
       { text: t("queue"), callback_data: "p:queue" }
@@ -3293,6 +3295,7 @@ function statusKeyboard(chatKey) {
 
 function settingsKeyboard() {
   return inlineKeyboard([
+    [{ text: `← ${t("back")}`, callback_data: "p:main" }],
     [
       { text: t("model"), callback_data: "p:settings_model" },
       { text: "Thinking", callback_data: "p:settings_reasoning" }
@@ -3441,6 +3444,7 @@ function liveProgressKeyboard() {
 
 function runtimeKeyboard() {
   return inlineKeyboard([
+    [{ text: `← ${t("back")}`, callback_data: "p:settings" }],
     [
       { text: t("output"), callback_data: "p:settings_runtime_output" },
       { text: t("queue"), callback_data: "p:settings_runtime_queue" }
@@ -3681,6 +3685,9 @@ function localeKeyboard() {
 function toolsKeyboard() {
   return inlineKeyboard([
     [
+      { text: `← ${t("back")}`, callback_data: "p:main" }
+    ],
+    [
       { text: "Health", callback_data: "tool:health" },
       { text: "Doctor", callback_data: "tool:doctor" }
     ],
@@ -3717,6 +3724,26 @@ function withBackRow(keyboard, panel) {
   return inlineKeyboard(rows);
 }
 
+function withPreviousPanelButton(keyboard, previousPanel) {
+  if (!previousPanel) return keyboard;
+  const callbackData = `p:${previousPanel}`;
+  const rows = keyboard?.reply_markup?.inline_keyboard ? [...keyboard.reply_markup.inline_keyboard] : [];
+  const hasPreviousButton = rows.some((row) => row.some((button) => (
+    button?.callback_data === callbackData && String(button.text || "").includes("←")
+  )));
+  if (!hasPreviousButton) rows.unshift([{ text: `← ${t("back")}`, callback_data: callbackData }]);
+  return inlineKeyboard(rows);
+}
+
+function previousPanelFor(panel) {
+  if (panel === "main") return null;
+  if (["status", "queue", "settings", "tools", "help"].includes(panel)) return "main";
+  if (panel.startsWith("settings_timezone_")) return "settings_timezone";
+  if (panel.startsWith("settings_runtime_")) return "settings_runtime";
+  if (panel.startsWith("settings_")) return "settings";
+  return "main";
+}
+
 function inlineKeyboard(rows) {
   return { reply_markup: { inline_keyboard: rows } };
 }
@@ -3746,6 +3773,7 @@ async function handleQueueButton(ctx, action, value) {
   }
   if (action === "clear") {
     await editOrReplyHtml(ctx, `${b(t("queueClearConfirmTitle"))}\n${t("queueClearConfirmBody")}`, inlineKeyboard([
+      [{ text: `← ${t("back")}`, callback_data: "p:queue" }],
       [
         { text: t("clearAll"), callback_data: "confirm:q_clear" },
         { text: t("cancel"), callback_data: "p:queue" }
@@ -3912,6 +3940,7 @@ async function handleToolButton(ctx, action) {
     await editOrReplyHtml(ctx, formatCodexMaintenanceResultHtml(await runCodexMaintenance("log-rotate")), codexMaintenanceKeyboard());
   } else if (action === "codex_maintenance_sqlite_repair") {
     await editOrReplyHtml(ctx, codexMaintenanceSqliteRepairConfirmHtml(), inlineKeyboard([
+      [{ text: `← ${t("back")}`, callback_data: "tool:codex_maintenance" }],
       [
         { text: t("repairRun"), callback_data: "tool:codex_maintenance_sqlite_repair_apply", style: "danger" },
         { text: t("cancel"), callback_data: "tool:codex_maintenance", style: "primary" }
@@ -3935,6 +3964,7 @@ async function handleToolButton(ctx, action) {
     await editOrReplyHtml(ctx, codexMaintenanceMenuHtml(), codexMaintenanceKeyboard());
   } else if (action === "forget") {
     await editOrReplyHtml(ctx, `${b(t("forgetConfirmTitle"))}\n${t("forgetConfirmBody")}`, inlineKeyboard([
+      [{ text: `← ${t("back")}`, callback_data: "p:tools" }],
       [
         { text: t("forgetRun"), callback_data: "confirm:forget" },
         { text: t("cancel"), callback_data: "p:tools" }
@@ -3944,7 +3974,10 @@ async function handleToolButton(ctx, action) {
 }
 
 function withToolsBack() {
-  return inlineKeyboard([[{ text: t("tools"), callback_data: "p:tools" }, { text: t("main"), callback_data: "p:main" }]]);
+  return inlineKeyboard([
+    [{ text: `← ${t("back")}`, callback_data: "p:tools" }],
+    [{ text: t("tools"), callback_data: "p:tools" }, { text: t("main"), callback_data: "p:main" }]
+  ]);
 }
 
 function codexMaintenanceMenuHtml() {
@@ -3968,6 +4001,9 @@ function codexMaintenanceMenuHtml() {
 
 function codexMaintenanceKeyboard() {
   return inlineKeyboard([
+    [
+      { text: `← ${t("back")}`, callback_data: "p:tools" }
+    ],
     [
       { text: "📊 Report", callback_data: "tool:codex_maintenance_report", style: "primary" },
       { text: "💾 Backup", callback_data: "tool:codex_maintenance_backup", style: "success" }
@@ -4541,6 +4577,7 @@ function formatQueueModeHtml(chatKey) {
 function queueKeyboard(chatKey) {
   const paused = isQueuePaused(chatKey);
   const rows = [
+    [{ text: `← ${t("back")}`, callback_data: "p:main" }],
     [
       { text: paused ? t("resumeAuto") : t("pauseAuto"), callback_data: paused ? "q:resume" : "q:pause" },
       { text: t("refresh"), callback_data: "p:queue" }
