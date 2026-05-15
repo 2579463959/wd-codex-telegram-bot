@@ -4,14 +4,52 @@
   "license": "MIT",
   "type": "module",
   "description": "Telegram bridge for Codex CLI via @openai/codex-sdk",
+  "homepage": "https://github.com/woosungchoi/codex-telegram-bot#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/woosungchoi/codex-telegram-bot.git"
+  },
+  "bugs": {
+    "url": "https://github.com/woosungchoi/codex-telegram-bot/issues"
+  },
+  "keywords": [
+    "codex",
+    "telegram",
+    "bot",
+    "codex-cli",
+    "openai"
+  ],
+  "files": [
+    ".env.example",
+    ".env.minimal.example",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "LICENSE",
+    "README.md",
+    "README.ko.md",
+    "SECURITY.md",
+    "assets",
+    "bin",
+    "docs",
+    "scripts",
+    "src",
+    "systemd"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "start": "node src/bot.js",
-    "check": "node --check src/bot.js && node --check scripts/*.mjs"
+    "check": "node --check src/*.js && node --check scripts/*.mjs && node --check test/*.mjs",
+    "test": "node --test"
   },
   "dependencies": {
     "@openai/codex-sdk": "0.130.0",
     "dotenv": "^17.2.3",
     "markdown-it": "^14.1.1",
     "telegraf": "^4.16.3"
+  },
+  "devDependencies": {
+    "@openai/codex": "0.130.0"
   }
 }

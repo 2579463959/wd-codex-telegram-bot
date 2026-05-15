@@ -52,7 +52,7 @@ jobs:
 
       - name: Install Codex CLI
         if: ${{ steps.codex-token.outputs.configured == 'true' }}
-        run: npm install -g @openai/codex@0.130.0
+        run: npm install -g "@openai/codex@$(node -p "require('./package.json').devDependencies['@openai/codex']")"
 
       - name: Login with Codex OAuth token
         if: ${{ steps.codex-token.outputs.configured == 'true' }}

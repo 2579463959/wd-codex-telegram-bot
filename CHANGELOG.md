@@ -1,0 +1,25 @@
+# Changelog
+
+All notable public changes are documented here.
+
+## 1.0.1 - 2026-05-15
+
+- Fixed slash-prefixed non-command text handling so paths like `/home/...` are
+  passed to Codex instead of being ignored.
+- Added GitHub Actions CI.
+- Added optional Codex OAuth PR review and failed CI diagnosis workflows.
+- Added automated `@openai/codex-sdk` and `@openai/codex` update testing and
+  PR creation.
+- Added public project hygiene files: security policy, changelog, contribution
+  guide, issue templates, PR template, Dependabot, architecture docs, and
+  security model docs.
+- Expanded the Korean README.
+- Updated GitHub Actions to Node 24 action runtimes.
+
+## 1.0.0 - 2026-05-15
+
+- Initial public release.
+- Added Telegram bridge for Codex CLI via `@openai/codex-sdk`.
+- Added queue modes, inline settings, image input support, cleanup, backups,
+  export, health checks, and maintenance tools inspired by keep-codex-fast.
+- Added English and Korean README files, hero image, and MIT license.

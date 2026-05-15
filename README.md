@@ -13,6 +13,9 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/woosungchoi/codex-telegram-bot/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/woosungchoi/codex-telegram-bot/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/woosungchoi/codex-telegram-bot/releases"><img alt="Release" src="https://img.shields.io/github/v/release/woosungchoi/codex-telegram-bot"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Node.js" src="https://img.shields.io/badge/Node.js-18%2B-339933">
   <img alt="Telegram" src="https://img.shields.io/badge/Telegram-Bot-26A5E4">
   <img alt="Codex SDK" src="https://img.shields.io/badge/Codex-SDK-111827">
@@ -38,6 +41,12 @@ handoffs before retiring important active threads.
 cd ~/codex-telegram-bot
 npm install
 cp .env.example .env
+```
+
+For the smallest starting point, use:
+
+```bash
+cp .env.minimal.example .env
 ```
 
 Edit `.env`:
@@ -98,9 +107,12 @@ npm start
 This repository includes GitHub Actions for CI, Codex PR review, and failed CI
 diagnosis.
 
-- `CI`: runs `npm ci`, `npm run check`, `npm test --if-present`, and `npm run build --if-present`.
+- `CI`: runs `npm ci`, `npm run check`, `npm test`, and `npm run build --if-present`.
 - `Codex PR Review`: runs `codex review` on pull requests and updates one PR comment.
 - `Codex CI Diagnosis`: when `CI` fails, runs `codex exec` on the CI log tail and comments on the PR when one exists.
+- `Codex Dependency Update`: checks the latest `@openai/codex-sdk` and
+  `@openai/codex`, installs them, runs `npm run check`, `npm test`, and
+  `codex --version`, then opens or updates a PR only when the update passes.
 
 The Codex workflows do not use `OPENAI_API_KEY`. They only run when the
 repository secret `CODEX_ACCESS_TOKEN` is configured for Codex OAuth login:
@@ -111,6 +123,18 @@ gh secret set CODEX_ACCESS_TOKEN --body "$CODEX_ACCESS_TOKEN"
 
 If that secret is not configured, the Codex jobs skip cleanly and the normal CI
 still runs.
+
+Dependabot is also configured to check `@openai/codex-sdk` and `@openai/codex`
+daily, and other npm dependencies weekly.
+
+## Project Docs
+
+- [Architecture](docs/architecture.md)
+- [Security model](docs/security-model.md)
+- [Screenshot guide](docs/screenshots.md)
+- [Security policy](SECURITY.md)
+- [Contributing](CONTRIBUTING.md)
+- [Changelog](CHANGELOG.md)
 
 ## Telegram Commands
 

@@ -13,6 +13,9 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/woosungchoi/codex-telegram-bot/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/woosungchoi/codex-telegram-bot/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/woosungchoi/codex-telegram-bot/releases"><img alt="Release" src="https://img.shields.io/github/v/release/woosungchoi/codex-telegram-bot"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Node.js" src="https://img.shields.io/badge/Node.js-18%2B-339933">
   <img alt="Telegram" src="https://img.shields.io/badge/Telegram-Bot-26A5E4">
   <img alt="Codex SDK" src="https://img.shields.io/badge/Codex-SDK-111827">
@@ -37,6 +40,12 @@
 cd ~/codex-telegram-bot
 npm install
 cp .env.example .env
+```
+
+가장 작은 시작 설정만 필요하면 아래 파일을 사용하세요.
+
+```bash
+cp .env.minimal.example .env
 ```
 
 `.env`를 수정합니다.
@@ -96,9 +105,12 @@ npm start
 
 이 저장소에는 CI, Codex PR review, 실패한 CI 진단용 GitHub Actions가 포함되어 있습니다.
 
-- `CI`: `npm ci`, `npm run check`, `npm test --if-present`, `npm run build --if-present`를 실행합니다.
+- `CI`: `npm ci`, `npm run check`, `npm test`, `npm run build --if-present`를 실행합니다.
 - `Codex PR Review`: pull request에서 `codex review`를 실행하고 PR comment 하나를 생성/수정합니다.
 - `Codex CI Diagnosis`: `CI`가 실패하면 CI log tail에 대해 `codex exec`를 실행하고, 연결된 PR이 있으면 comment를 남깁니다.
+- `Codex Dependency Update`: 최신 `@openai/codex-sdk`와 `@openai/codex`를
+  확인하고 설치한 뒤 `npm run check`, `npm test`, `codex --version`을 통과할
+  때만 PR을 생성하거나 갱신합니다.
 
 Codex workflow는 `OPENAI_API_KEY`를 사용하지 않습니다. Codex OAuth login용
 repository secret `CODEX_ACCESS_TOKEN`이 설정된 경우에만 실행됩니다.
@@ -108,6 +120,17 @@ gh secret set CODEX_ACCESS_TOKEN --body "$CODEX_ACCESS_TOKEN"
 ```
 
 secret이 설정되어 있지 않으면 Codex job은 정상적으로 skip되고 기본 CI는 계속 실행됩니다.
+
+Dependabot도 `@openai/codex-sdk`와 `@openai/codex`는 매일, 다른 npm dependency는 매주 확인하도록 설정되어 있습니다.
+
+## 프로젝트 문서
+
+- [아키텍처](docs/architecture.md)
+- [보안 모델](docs/security-model.md)
+- [스크린샷 가이드](docs/screenshots.md)
+- [보안 정책](SECURITY.md)
+- [기여 가이드](CONTRIBUTING.md)
+- [변경 내역](CHANGELOG.md)
 
 ## Telegram 명령어
 

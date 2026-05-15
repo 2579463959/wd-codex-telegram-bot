@@ -1,0 +1,111 @@
+name: Codex Dependency Update
+
+on:
+  schedule:
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    name: Test Latest Codex Packages
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Check latest versions
+        id: version
+        run: |
+          current_sdk="$(node -p "require('./package.json').dependencies['@openai/codex-sdk']")"
+          latest_sdk="$(npm view @openai/codex-sdk version)"
+          current_cli="$(node -p "require('./package.json').devDependencies['@openai/codex']")"
+          latest_cli="$(npm view @openai/codex version)"
+          echo "current_sdk=$current_sdk" >> "$GITHUB_OUTPUT"
+          echo "latest_sdk=$latest_sdk" >> "$GITHUB_OUTPUT"
+          echo "current_cli=$current_cli" >> "$GITHUB_OUTPUT"
+          echo "latest_cli=$latest_cli" >> "$GITHUB_OUTPUT"
+          if [ "$current_sdk" = "$latest_sdk" ] && [ "$current_cli" = "$latest_cli" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Stop when already current
+        if: ${{ steps.version.outputs.changed != 'true' }}
+        run: echo "Codex packages are already current."
+
+      - name: Update packages
+        if: ${{ steps.version.outputs.changed == 'true' }}
+        run: |
+          npm install "@openai/codex-sdk@${{ steps.version.outputs.latest_sdk }}" --save-exact
+          npm install "@openai/codex@${{ steps.version.outputs.latest_cli }}" --save-dev --save-exact
+
+      - name: Verify updated packages
+        if: ${{ steps.version.outputs.changed == 'true' }}
+        run: |
+          npm run check
+          npm test
+          npm install -g "@openai/codex@${{ steps.version.outputs.latest_cli }}"
+          codex --version
+
+      - name: Create or update pull request
+        if: ${{ steps.version.outputs.changed == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: automation/update-codex-packages
+          LATEST_SDK: ${{ steps.version.outputs.latest_sdk }}
+          CURRENT_SDK: ${{ steps.version.outputs.current_sdk }}
+          LATEST_CLI: ${{ steps.version.outputs.latest_cli }}
+          CURRENT_CLI: ${{ steps.version.outputs.current_cli }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+          git add package.json package-lock.json
+          if git diff --cached --quiet; then
+            echo "No package file changes after update."
+            exit 0
+          fi
+          git commit -m "Update Codex packages"
+          git push --force origin "$BRANCH"
+          cat > pr-body.md <<BODY
+          Automated Codex package update.
+
+          - \`@openai/codex-sdk\`: \`$CURRENT_SDK\` -> \`$LATEST_SDK\`
+          - \`@openai/codex\`: \`$CURRENT_CLI\` -> \`$LATEST_CLI\`
+
+          Verification run in this workflow:
+
+          - \`npm run check\`
+          - \`npm test\`
+          - \`codex --version\`
+          BODY
+          if gh pr view "$BRANCH" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh pr edit "$BRANCH" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Update Codex packages" \
+              --body-file pr-body.md
+          else
+            gh pr create \
+              --repo "$GITHUB_REPOSITORY" \
+              --base main \
+              --head "$BRANCH" \
+              --title "Update Codex packages" \
+              --body-file pr-body.md
+          fi
