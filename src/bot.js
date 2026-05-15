@@ -49,6 +49,73 @@ const TIME_PRESET_CHOICES = [
   ["18_00", "18:00"]
 ];
 
+const REGISTERED_TELEGRAM_COMMANDS = new Set([
+  "start",
+  "help",
+  "menu",
+  "new",
+  "resume",
+  "resume_last",
+  "threads",
+  "status",
+  "options",
+  "settings",
+  "model",
+  "model_off",
+  "workdir",
+  "workdir_default",
+  "sandbox",
+  "sandbox_read_only",
+  "sandbox_workspace_write",
+  "sandbox_danger_full_access",
+  "sandbox_default",
+  "approval",
+  "approval_never",
+  "approval_on_request",
+  "approval_on_failure",
+  "approval_untrusted",
+  "approval_default",
+  "reasoning",
+  ...["minimal", "low", "medium", "high", "xhigh", "default"].map((value) => `reasoning_${value}`),
+  "fast",
+  "fast_on",
+  "fast_off",
+  "fast_status",
+  "websearch",
+  ...["disabled", "cached", "live", "default"].map((value) => `websearch_${value}`),
+  "network",
+  ...["on", "off", "default"].map((value) => `network_${value}`),
+  "skipgit",
+  ...["on", "off", "default"].map((value) => `skipgit_${value}`),
+  "adddir",
+  "cleardirs",
+  "stream",
+  ...["on", "off", "default"].map((value) => `stream_${value}`),
+  "schema",
+  "schema_off",
+  "config",
+  "doctor",
+  "health",
+  "tools",
+  "backup",
+  "export",
+  "prefs",
+  "prefs_reset",
+  "whoami",
+  "logs",
+  "logs_error",
+  "stop",
+  "queue",
+  "queue_pause",
+  "queue_resume",
+  "queue_mode",
+  ...["safe", "interrupt", "side"].map((value) => `queue_mode_${value}`),
+  "cancelqueue",
+  "forget",
+  "cleanup",
+  "cleanup_status"
+]);
+
 const UI_TEXT = {
   en: {
     mainInstruction: "Open the panel you need with the buttons below.",
@@ -1050,7 +1117,7 @@ bot.on("document", async (ctx) => {
 
 bot.on("text", async (ctx) => {
   const text = ctx.message.text.trim();
-  if (!text || text.startsWith("/")) return;
+  if (!text || isRegisteredTelegramCommandText(ctx.message)) return;
   await handleCodexMessage(ctx, text, async () => []);
 });
 
@@ -1955,6 +2022,18 @@ function getChatKey(ctx) {
 
 function commandName(ctx) {
   return (ctx.message?.text ?? "").trimStart().split(/\s+/, 1)[0]?.replace(/^\//, "") || "command";
+}
+
+function isRegisteredTelegramCommandText(message) {
+  const text = message?.text ?? "";
+  const entity = message?.entities?.find((item) => item.type === "bot_command" && item.offset === 0);
+  if (!entity && !text.trimStart().startsWith("/")) return false;
+  const trimmed = text.trimStart();
+  const rawCommand = entity
+    ? text.slice(entity.offset, entity.offset + entity.length)
+    : trimmed.split(/\s+/, 1)[0];
+  const command = rawCommand.replace(/^\//, "").split("@", 1)[0].toLowerCase();
+  return REGISTERED_TELEGRAM_COMMANDS.has(command);
 }
 
 function getCommandArgs(ctx) {
