@@ -1,0 +1,7 @@
+node_modules/
+.env
+state/
+npm-debug.log*
+*.log
+*.swp
+.*.swp

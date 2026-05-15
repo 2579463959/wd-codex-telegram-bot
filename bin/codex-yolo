@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CODEX_REAL_PATH="${CODEX_REAL_PATH:-codex}"
+
+if [[ "${1:-}" == "exec" ]]; then
+  shift
+  exec "$CODEX_REAL_PATH" exec --dangerously-bypass-approvals-and-sandbox "$@"
+fi
+
+exec "$CODEX_REAL_PATH" "$@"

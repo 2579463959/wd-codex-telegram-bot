@@ -1,0 +1,15 @@
+[Unit]
+Description=Codex Telegram Bot
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/codex-telegram-bot
+EnvironmentFile=%h/codex-telegram-bot/.env
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/env node %h/codex-telegram-bot/src/bot.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
