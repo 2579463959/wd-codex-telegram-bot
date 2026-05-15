@@ -766,18 +766,21 @@ async function handleCleanupCommand(ctx, overrideArg = null) {
 
 bot.action(/^cleanup:(quarantine|delete|both|ignore):([a-zA-Z0-9_-]+)$/, async (ctx) => {
   const [, action, planId] = ctx.match;
-  await ctx.answerCbQuery();
   const plan = state.cleanup?.plans?.[planId];
   if (!plan) {
+    await answerCleanupCallback(ctx, "missing");
     await editCleanupMessage(ctx, `${b(uiLanguage() === "ko" ? "🧹 Cleanup plan을 찾을 수 없습니다." : "🧹 Cleanup plan not found")}\n${uiLanguage() === "ko" ? "이미 처리되었거나 만료되었습니다." : "It was already handled or expired."}\n\n${uiLanguage() === "ko" ? "새 후보가 필요하면" : "To get fresh candidates, run"} ${code("/cleanup")}.`);
     return;
   }
   if (Date.now() > Date.parse(plan.expiresAt)) {
+    await answerCleanupCallback(ctx, "expired");
     delete state.cleanup.plans[planId];
     await saveState(config.stateFile, state);
     await editCleanupMessage(ctx, `${b(uiLanguage() === "ko" ? "⌛ Cleanup plan이 만료되었습니다." : "⌛ Cleanup plan expired")}\n${uiLanguage() === "ko" ? "승인 유효시간" : "Approval expired"}: ${code(formatDateTime(plan.expiresAt))}\n\n${uiLanguage() === "ko" ? "새 후보가 필요하면" : "To get fresh candidates, run"} ${code("/cleanup")}.`);
     return;
   }
+  await answerCleanupCallback(ctx, action);
+  await editCleanupProcessingMessage(ctx, action, plan);
   if (action === "ignore") {
     delete state.cleanup.plans[planId];
     await saveState(config.stateFile, state);
@@ -790,6 +793,14 @@ bot.action(/^cleanup:(quarantine|delete|both|ignore):([a-zA-Z0-9_-]+)$/, async (
   await appendCleanupLog({ type: "apply", action, planId, result, at: new Date().toISOString() });
   await saveState(config.stateFile, state);
   await editCleanupMessage(ctx, formatCleanupResultHtml(action, result, plan));
+});
+
+bot.action(/^cleanup:processing:([a-zA-Z0-9_-]+)$/, async (ctx) => {
+  try {
+    await ctx.answerCbQuery(uiLanguage() === "ko" ? "이미 처리 중입니다." : "Cleanup is already in progress.");
+  } catch (error) {
+    console.warn("cleanup processing callback answer failed:", error instanceof Error ? error.message : String(error));
+  }
 });
 
 bot.action(/^queue:(cancel|up|next):([a-zA-Z0-9_-]+)$/, async (ctx) => {
@@ -2289,11 +2300,55 @@ async function editCleanupMessage(ctx, html) {
   return editOrReplyHtml(ctx, html, { reply_markup: { inline_keyboard: [] } });
 }
 
+async function editCleanupProcessingMessage(ctx, action, plan) {
+  return editOrReplyHtml(ctx, formatCleanupProcessingHtml(action, plan), {
+    reply_markup: {
+      inline_keyboard: [[{ text: "⏳ 처리 중...", callback_data: `cleanup:processing:${plan.id}` }]]
+    }
+  });
+}
+
 function cleanupActionLabel(action) {
   if (action === "quarantine") return "📦 격리";
   if (action === "delete") return "🗑️ 영구 삭제";
   if (action === "both") return "⚠️ 격리 + 영구 삭제";
+  if (action === "ignore") return "✖️ 무시";
   return action;
+}
+
+function cleanupCallbackText(action) {
+  if (action === "quarantine") return uiLanguage() === "ko" ? "격리 처리를 시작합니다." : "Starting quarantine.";
+  if (action === "delete") return uiLanguage() === "ko" ? "영구 삭제 처리를 시작합니다." : "Starting permanent deletion.";
+  if (action === "both") return uiLanguage() === "ko" ? "격리와 영구 삭제를 시작합니다." : "Starting cleanup.";
+  if (action === "ignore") return uiLanguage() === "ko" ? "Cleanup 후보를 무시합니다." : "Ignoring cleanup candidates.";
+  if (action === "missing") return uiLanguage() === "ko" ? "Cleanup plan을 찾을 수 없습니다." : "Cleanup plan not found.";
+  if (action === "expired") return uiLanguage() === "ko" ? "Cleanup plan이 만료되었습니다." : "Cleanup plan expired.";
+  return "";
+}
+
+async function answerCleanupCallback(ctx, action) {
+  try {
+    await ctx.answerCbQuery(cleanupCallbackText(action));
+  } catch (error) {
+    console.warn("cleanup callback answer failed:", error instanceof Error ? error.message : String(error));
+  }
+}
+
+function formatCleanupProcessingHtml(action, plan) {
+  const lines = [
+    b(`⏳ Cleanup 처리 중: ${cleanupActionLabel(action)}`),
+    "",
+    uiLanguage() === "ko"
+      ? "버튼 입력을 받았습니다. 중복 실행을 막기 위해 버튼을 잠시 비활성화했습니다."
+      : "Button input received. The action button is temporarily disabled to prevent duplicate execution.",
+    "",
+    b(uiLanguage() === "ko" ? "처리 대상:" : "Targets:"),
+    `- ${uiLanguage() === "ko" ? "격리 후보" : "Quarantine candidates"}: ${code(`${plan.quarantineCandidates.length}${uiLanguage() === "ko" ? "개" : ""}`)}`,
+    `- ${uiLanguage() === "ko" ? "영구 삭제 후보" : "Permanent delete candidates"}: ${code(`${plan.deleteCandidates.length}${uiLanguage() === "ko" ? "개" : ""}`)}`,
+    "",
+    uiLanguage() === "ko" ? "완료되면 이 메시지가 결과로 바뀝니다." : "This message will be replaced with the final result."
+  ];
+  return lines.join("\n");
 }
 
 function formatCleanupIgnoredHtml(plan) {
