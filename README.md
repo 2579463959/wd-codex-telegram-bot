@@ -1,5 +1,7 @@
 # Codex Telegram Bot
 
+[한국어](README.ko.md)
+
 Telegram bridge for Codex CLI using `@openai/codex-sdk`.
 
 The safe local-state maintenance tools were inspired by
