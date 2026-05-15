@@ -251,3 +251,7 @@ Logs:
 ```bash
 journalctl --user -u codex-telegram-bot.service -f
 ```
+
+## License
+
+MIT License. See [LICENSE](LICENSE).

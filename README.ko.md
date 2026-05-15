@@ -173,3 +173,7 @@ systemctl --user status codex-telegram-bot.service
 ```bash
 journalctl --user -u codex-telegram-bot.service -f
 ```
+
+## 라이선스
+
+MIT 라이선스입니다. 자세한 내용은 [LICENSE](LICENSE)를 확인하세요.
