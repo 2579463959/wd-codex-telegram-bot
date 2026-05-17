@@ -2,6 +2,14 @@
 
 All notable public changes are documented here.
 
+## 1.0.3 - 2026-05-17
+
+- Improved cleanup action button feedback.
+- Added cleanup callback acknowledgements for missing, expired, ignored, and
+  active cleanup actions.
+- Replaced cleanup action buttons with a temporary processing state to prevent
+  accidental duplicate execution.
+
 ## 1.0.2 - 2026-05-15
 
 - Added locale-based Telegram UI translations under `src/locales/*.json`.
