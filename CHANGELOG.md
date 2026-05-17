@@ -2,6 +2,15 @@
 
 All notable public changes are documented here.
 
+## 1.0.4 - 2026-05-17
+
+- Moved cleanup action messages, status text, and result summaries into locale
+  files.
+- Removed remaining hard-coded Korean/English Telegram UI branches from the
+  public bot code.
+- Improved translation extensibility so new languages can be added by filling
+  `src/locales/<lang>.json`.
+
 ## 1.0.3 - 2026-05-17
 
 - Improved cleanup action button feedback.
