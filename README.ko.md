@@ -36,10 +36,25 @@
 
 ## 설치
 
+로컬 clone에서 실행하려면:
+
 ```bash
 cd ~/codex-telegram-bot
 npm install
 cp .env.example .env
+```
+
+현재 디렉터리에 `.env`를 만든 뒤에는 clone을 보관하지 않고 package command로 실행할 수도 있습니다.
+
+```bash
+npx --yes --package github:woosungchoi/codex-telegram-bot codex-telegram-bot
+```
+
+반복해서 사용할 때는 command를 global install할 수 있습니다.
+
+```bash
+npm install --global github:woosungchoi/codex-telegram-bot
+codex-telegram-bot
 ```
 
 가장 작은 시작 설정만 필요하면 아래 파일을 사용하세요.

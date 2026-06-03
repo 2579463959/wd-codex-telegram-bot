@@ -19,6 +19,9 @@
     "codex-cli",
     "openai"
   ],
+  "bin": {
+    "codex-telegram-bot": "./bin/codex-telegram-bot"
+  },
   "files": [
     ".env.example",
     ".env.minimal.example",

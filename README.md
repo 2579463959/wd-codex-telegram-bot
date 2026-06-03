@@ -45,10 +45,26 @@ handoffs before retiring important active threads.
 
 ## Setup
 
+Run from a local clone:
+
 ```bash
 cd ~/codex-telegram-bot
 npm install
 cp .env.example .env
+```
+
+After creating `.env` in the current directory, you can also run the package
+command without keeping a clone:
+
+```bash
+npx --yes --package github:woosungchoi/codex-telegram-bot codex-telegram-bot
+```
+
+For repeated use, install the command globally:
+
+```bash
+npm install --global github:woosungchoi/codex-telegram-bot
+codex-telegram-bot
 ```
 
 For the smallest starting point, use:
