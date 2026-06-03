@@ -2,10 +2,20 @@
 
 All notable public changes are documented here.
 
-## Unreleased
+## 1.0.7 - 2026-06-03
 
-- Added release and rollback runbooks covering automated gates, startup smoke,
-  Telegram smoke, and rollback preparation.
+- Added strict runtime config parsing with user, chat, and thread allowlists.
+- Added safe Telegram HTML/Markdown rendering helpers and Markdown-aware
+  message splitting tests.
+- Extracted queue state helpers and upload cleanup helpers with focused tests.
+- Added `/cleanup_uploads` and `/cleanup_uploads_confirm` for downloaded image
+  retention cleanup.
+- Added the `codex-telegram-bot` package executable for `npx` and global
+  installs.
+- Added lint, format, audit, package, release, and rollback verification
+  coverage.
+- Split the runtime into `src/runtime.js` while keeping `src/bot.js` as a thin
+  entrypoint.
 
 ## 1.0.5 - 2026-05-21
 
