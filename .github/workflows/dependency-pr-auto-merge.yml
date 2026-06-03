@@ -1,0 +1,103 @@
+name: Dependency PR Auto Merge
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+      - Codex PR Review
+      - Codex Dependency Update
+    types:
+      - completed
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  merge:
+    name: Merge Verified Dependency PRs
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
+    steps:
+      - name: Merge eligible dependency PRs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          allowed_statuses='["SUCCESS","SKIPPED","NEUTRAL"]'
+
+          is_allowed_head() {
+            case "$1" in
+              dependabot/*|automation/update-codex-packages) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          is_allowed_file() {
+            case "$1" in
+              package.json|package-lock.json|.github/workflows/*.yml|.github/workflows/*.yaml) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          gh pr list \
+            --repo "$REPO" \
+            --state open \
+            --base main \
+            --json number,title,headRefName,mergeStateStatus,statusCheckRollup,files \
+            --jq '.[] | @base64' |
+          while IFS= read -r encoded; do
+            pr_json="$(printf '%s' "$encoded" | base64 --decode)"
+            number="$(printf '%s' "$pr_json" | jq -r '.number')"
+            title="$(printf '%s' "$pr_json" | jq -r '.title')"
+            head_ref="$(printf '%s' "$pr_json" | jq -r '.headRefName')"
+            merge_state="$(printf '%s' "$pr_json" | jq -r '.mergeStateStatus')"
+
+            if ! is_allowed_head "$head_ref"; then
+              echo "Skipping PR #$number: unsupported head '$head_ref'."
+              continue
+            fi
+
+            if [ "$merge_state" != "CLEAN" ]; then
+              echo "Skipping PR #$number: merge state is '$merge_state'."
+              continue
+            fi
+
+            check_count="$(printf '%s' "$pr_json" | jq '.statusCheckRollup | length')"
+            bad_check_count="$(printf '%s' "$pr_json" | jq --argjson allowed "$allowed_statuses" '
+              [.statusCheckRollup[] |
+                select(
+                  .status != "COMPLETED" or
+                  (($allowed | index(.conclusion // "")) | not)
+                )
+              ] | length
+            ')"
+            if [ "$check_count" -eq 0 ] || [ "$bad_check_count" -ne 0 ]; then
+              echo "Skipping PR #$number: checks are not all successful."
+              continue
+            fi
+
+            unsafe_file_count=0
+            while IFS= read -r file; do
+              if ! is_allowed_file "$file"; then
+                echo "PR #$number has unsupported file: $file"
+                unsafe_file_count=$((unsafe_file_count + 1))
+              fi
+            done < <(printf '%s' "$pr_json" | jq -r '.files[].path')
+
+            if [ "$unsafe_file_count" -ne 0 ]; then
+              echo "Skipping PR #$number: file set is not dependency-only."
+              continue
+            fi
+
+            echo "Merging PR #$number: $title"
+            gh pr merge "$number" \
+              --repo "$REPO" \
+              --squash \
+              --delete-branch \
+              --subject "$title" \
+              --body "Automatically merged after successful dependency PR checks."
+          done
