@@ -12,6 +12,17 @@ import { Codex } from "@openai/codex-sdk";
 import { Telegraf } from "telegraf";
 import { readConfig as readRuntimeConfig } from "./config.js";
 import { LANGUAGE_CHOICES, TELEGRAM_LANGUAGE_CODES, VALID_LANGUAGES, textFor } from "./i18n.js";
+import {
+  dequeueNextTurn,
+  enqueueTurn,
+  hydratePendingQueues,
+  isPendingTurnExpired as isQueueTurnExpired,
+  moveTurn,
+  planIncomingTurn,
+  pruneExpiredTurns,
+  removeTurn,
+  serializePendingTurn
+} from "./queue.js";
 import { authorizeTelegramUpdate } from "./security.js";
 import { b, code, escapeHtml, pre, stripHtml } from "./telegram/html.js";
 import { formatCodexAnswerMarkdownHtml, formatCodexAnswerSafeHtml } from "./telegram/markdown.js";
@@ -940,21 +951,21 @@ async function handleCodexMessage(ctx, text, loadImages) {
     return;
   }
 
-  if (activeTurns.has(chatKey)) {
-    const mode = getQueueMode(chatKey);
-    if (mode === "interrupt") {
-      await handleInterruptMessage(ctx, chatKey, text, loadImages);
-      return;
-    }
-    if (mode === "side") {
-      await handleSideMessage(ctx, chatKey, text, loadImages);
-      return;
-    }
-    await handleSafeQueuedMessage(ctx, chatKey, text, loadImages);
+  const incomingPlan = planIncomingTurn({
+    active: activeTurns.has(chatKey),
+    paused: isQueuePaused(chatKey),
+    pendingCount: getPendingTurns(chatKey).length,
+    queueMode: getQueueMode(chatKey)
+  });
+  if (incomingPlan === "enqueue_front_interrupt") {
+    await handleInterruptMessage(ctx, chatKey, text, loadImages);
     return;
   }
-
-  if (isQueuePaused(chatKey) && getPendingTurns(chatKey).length > 0) {
+  if (incomingPlan === "start_side") {
+    await handleSideMessage(ctx, chatKey, text, loadImages);
+    return;
+  }
+  if (incomingPlan === "enqueue_back") {
     await handleSafeQueuedMessage(ctx, chatKey, text, loadImages);
     return;
   }
@@ -1466,42 +1477,29 @@ function getPendingTurns(chatKey) {
 
 async function enqueuePendingTurn(chatKey, preparedTurn) {
   const queue = getPendingTurns(chatKey);
-  const max = Math.max(0, runtimeValue("telegramPendingTurnsMax"));
-  if (queue.length >= max) return { ok: false, position: queue.length };
-  queue.push(preparedTurn);
-  pendingTurns.set(chatKey, queue);
+  const result = enqueueTurn(queue, preparedTurn, { max: runtimeValue("telegramPendingTurnsMax") });
+  if (!result.ok) return { ok: false, position: queue.length };
+  pendingTurns.set(chatKey, result.queue);
   await persistPendingTurns(chatKey);
-  return { ok: true, position: queue.length };
+  return { ok: true, position: result.position };
 }
 
 async function enqueuePendingTurnFront(chatKey, preparedTurn) {
   const queue = getPendingTurns(chatKey);
-  const max = Math.max(0, runtimeValue("telegramPendingTurnsMax"));
-  if (queue.length >= max) return { ok: false, position: queue.length };
-  queue.unshift(preparedTurn);
-  pendingTurns.set(chatKey, queue);
+  const result = enqueueTurn(queue, preparedTurn, { max: runtimeValue("telegramPendingTurnsMax"), front: true });
+  if (!result.ok) return { ok: false, position: queue.length };
+  pendingTurns.set(chatKey, result.queue);
   await persistPendingTurns(chatKey);
-  return { ok: true, position: 1 };
+  return { ok: true, position: result.position };
 }
 
 async function dequeuePendingTurn(chatKey, ctx = null) {
-  const queue = getPendingTurns(chatKey);
-  let next = null;
-  let expired = 0;
-  while (queue.length > 0) {
-    const candidate = queue.shift();
-    if (isPendingTurnExpired(candidate)) {
-      expired += 1;
-      continue;
-    }
-    next = candidate;
-    break;
-  }
-  if (queue.length > 0) pendingTurns.set(chatKey, queue);
+  const result = dequeueNextTurn(getPendingTurns(chatKey), queueExpiryOptions());
+  if (result.queue.length > 0) pendingTurns.set(chatKey, result.queue);
   else pendingTurns.delete(chatKey);
   await persistPendingTurns(chatKey);
-  if (expired > 0 && ctx) await notifyExpiredPendingTurns(ctx, expired);
-  return next;
+  if (result.expired > 0 && ctx) await notifyExpiredPendingTurns(ctx, result.expired);
+  return result.turn;
 }
 
 async function clearPendingTurns(chatKey) {
@@ -1512,29 +1510,20 @@ async function clearPendingTurns(chatKey) {
 }
 
 async function removePendingTurn(chatKey, selector) {
-  const queue = getPendingTurns(chatKey);
-  const index = findPendingTurnIndex(queue, selector);
-  if (index < 0) return 0;
-  queue.splice(index, 1);
-  if (queue.length > 0) pendingTurns.set(chatKey, queue);
+  const result = removeTurn(getPendingTurns(chatKey), selector);
+  if (result.changed === 0) return 0;
+  if (result.queue.length > 0) pendingTurns.set(chatKey, result.queue);
   else pendingTurns.delete(chatKey);
   await persistPendingTurns(chatKey);
-  return 1;
+  return result.changed;
 }
 
 async function movePendingTurn(chatKey, turnId, direction) {
-  const queue = getPendingTurns(chatKey);
-  const index = findPendingTurnIndex(queue, turnId);
-  if (index < 0) return 0;
-  if (direction === "next") {
-    const [turn] = queue.splice(index, 1);
-    queue.unshift(turn);
-  } else if (direction === "up" && index > 0) {
-    [queue[index - 1], queue[index]] = [queue[index], queue[index - 1]];
-  }
-  pendingTurns.set(chatKey, queue);
+  const result = moveTurn(getPendingTurns(chatKey), turnId, direction);
+  if (result.changed === 0) return 0;
+  pendingTurns.set(chatKey, result.queue);
   await persistPendingTurns(chatKey);
-  return 1;
+  return result.changed;
 }
 
 function countPendingTurns() {
@@ -1544,46 +1533,13 @@ function countPendingTurns() {
 }
 
 function hydratePendingTurnsFromState() {
-  for (const [chatKey, queue] of Object.entries(state.queues ?? {})) {
-    if (!Array.isArray(queue)) continue;
-    const hydrated = queue
-      .map((turn) => normalizePendingTurn(turn, chatKey))
-      .filter(Boolean)
-      .filter((turn) => !isPendingTurnExpired(turn));
-    if (hydrated.length > 0) pendingTurns.set(chatKey, hydrated);
-    else delete state.queues[chatKey];
-  }
-}
-
-function normalizePendingTurn(turn, chatKey) {
-  if (!turn || typeof turn !== "object" || typeof turn.inputText !== "string") return null;
-  const now = new Date();
-  const enqueuedAt = Number.isNaN(Date.parse(turn.enqueuedAt)) ? now.toISOString() : turn.enqueuedAt;
-  return {
-    id: typeof turn.id === "string" && turn.id ? turn.id : createQueueItemId(),
-    chatKey,
-    chatId: turn.chatId ?? chatKey,
-    text: typeof turn.text === "string" ? turn.text : turn.inputText,
-    inputText: turn.inputText,
-    imagePaths: Array.isArray(turn.imagePaths) ? turn.imagePaths.filter((entry) => typeof entry === "string") : [],
-    enqueuedAt,
-    expiresAt: Number.isNaN(Date.parse(turn.expiresAt))
-      ? new Date(Date.parse(enqueuedAt) + runtimeValue("telegramPendingTurnMaxAgeSeconds") * 1000).toISOString()
-      : turn.expiresAt
-  };
-}
-
-function serializePendingTurn(turn) {
-  return {
-    id: turn.id,
-    chatKey: turn.chatKey,
-    chatId: turn.chatId,
-    text: turn.text,
-    inputText: turn.inputText,
-    imagePaths: turn.imagePaths,
-    enqueuedAt: turn.enqueuedAt,
-    expiresAt: turn.expiresAt
-  };
+  const hydrated = hydratePendingQueues(state.queues, {
+    ...queueExpiryOptions(),
+    createId: createQueueItemId
+  });
+  pendingTurns.clear();
+  for (const [chatKey, queue] of hydrated.pending.entries()) pendingTurns.set(chatKey, queue);
+  state.queues = hydrated.queues;
 }
 
 async function persistPendingTurns(chatKey) {
@@ -1594,35 +1550,25 @@ async function persistPendingTurns(chatKey) {
 }
 
 async function pruneExpiredPendingTurns(chatKey, ctx = null) {
-  const queue = getPendingTurns(chatKey);
-  const fresh = queue.filter((turn) => !isPendingTurnExpired(turn));
-  const expired = queue.length - fresh.length;
-  if (expired === 0) return 0;
-  if (fresh.length > 0) pendingTurns.set(chatKey, fresh);
+  const result = pruneExpiredTurns(getPendingTurns(chatKey), queueExpiryOptions());
+  if (result.expired === 0) return 0;
+  if (result.queue.length > 0) pendingTurns.set(chatKey, result.queue);
   else pendingTurns.delete(chatKey);
   await persistPendingTurns(chatKey);
-  if (ctx) await notifyExpiredPendingTurns(ctx, expired);
-  return expired;
+  if (ctx) await notifyExpiredPendingTurns(ctx, result.expired);
+  return result.expired;
 }
 
 function isPendingTurnExpired(turn) {
-  if (runtimeValue("telegramPendingTurnMaxAgeSeconds") <= 0) return false;
-  const expiresAt = Date.parse(turn?.expiresAt ?? "");
-  return Number.isFinite(expiresAt) && expiresAt <= Date.now();
+  return isQueueTurnExpired(turn, queueExpiryOptions());
+}
+
+function queueExpiryOptions() {
+  return { maxAgeSeconds: runtimeValue("telegramPendingTurnMaxAgeSeconds") };
 }
 
 async function notifyExpiredPendingTurns(ctx, count) {
   await replyHtml(ctx, tf("expiredQueuedTurnsCleaned", { count: code(cleanupCount(count)) }));
-}
-
-function findPendingTurnIndex(queue, selector) {
-  const value = String(selector ?? "").trim();
-  if (!value) return -1;
-  if (/^\d+$/.test(value)) {
-    const index = Number(value) - 1;
-    if (index >= 0 && index < queue.length) return index;
-  }
-  return queue.findIndex((turn) => turn.id === value);
 }
 
 function createQueueItemId() {
