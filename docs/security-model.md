@@ -7,6 +7,9 @@ public anonymous access.
 
 - Telegram users are trusted only after their numeric id is listed in
   `ALLOWED_USER_IDS`.
+- If configured, `ALLOWED_CHAT_IDS` restricts authorized users to specific chats.
+- If configured, `ALLOWED_THREAD_IDS` restricts authorized users to specific
+  forum topics or message threads.
 - Codex can read or write according to the configured sandbox and approval
   policy.
 - Runtime state and Codex sessions are local files and may contain private
@@ -25,8 +28,12 @@ case, Codex review and diagnosis steps skip while normal CI still runs.
 ## Telegram Safety
 
 - Keep `ALLOWED_USER_IDS` narrow.
+- Use `/whoami` in the target chat or topic before tightening
+  `ALLOWED_CHAT_IDS` or `ALLOWED_THREAD_IDS`.
 - Treat Telegram as a command surface for the machine running the bot.
 - Avoid `danger-full-access` unless the host is disposable or tightly isolated.
+- `CODEX_SKIP_GIT_REPO_CHECK=false` is the default. Set it to `true` only when
+  you intentionally want Codex to run outside Git worktrees.
 - Use `/settings` and `/tools` to inspect active sandbox, approval, queue, and
   maintenance state.
 

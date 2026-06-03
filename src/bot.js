@@ -11,7 +11,9 @@ import { promisify } from "node:util";
 import { Codex } from "@openai/codex-sdk";
 import MarkdownIt from "markdown-it";
 import { Telegraf } from "telegraf";
+import { readConfig as readRuntimeConfig } from "./config.js";
 import { LANGUAGE_CHOICES, TELEGRAM_LANGUAGE_CODES, VALID_LANGUAGES, textFor } from "./i18n.js";
+import { authorizeTelegramUpdate } from "./security.js";
 import { isRegisteredTelegramCommandText } from "./telegram_commands.js";
 
 const execFileAsync = promisify(execFile);
@@ -177,7 +179,7 @@ const FALLBACK_CODEX_MODELS = [
   { slug: "gpt-5.2", displayName: "GPT-5.2", fastSupported: false }
 ];
 
-const config = readConfig();
+const config = readRuntimeConfig();
 const bot = new Telegraf(config.telegramBotToken, { handlerTimeout: Infinity });
 const markdown = new MarkdownIt({
   html: false,
@@ -203,8 +205,8 @@ bot.catch(async (error, ctx) => {
 });
 
 bot.use(async (ctx, next) => {
-  const userId = String(ctx.from?.id ?? "");
-  if (!config.allowedUserIds.has(userId)) {
+  const authorization = authorizeTelegramUpdate(ctx, config);
+  if (!authorization.ok) {
     if (ctx.message) await ctx.reply("Unauthorized.");
     return;
   }

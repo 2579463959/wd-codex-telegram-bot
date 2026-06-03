@@ -61,11 +61,14 @@ Edit `.env`:
 
 - `TELEGRAM_BOT_TOKEN`: token from `@BotFather`
 - `ALLOWED_USER_IDS`: comma-separated Telegram numeric user ids
+- `ALLOWED_CHAT_IDS`: optional comma-separated chat ids. When set, authorized users are accepted only in these chats.
+- `ALLOWED_THREAD_IDS`: optional comma-separated forum topic/thread ids. When set, authorized users are accepted only in these threads.
 - `CODEX_WORKDIR`: defaults to `$HOME`
 - `CODEX_PATH`: Codex executable, default `codex`. Set this explicitly if Codex is not on `PATH`.
 - `CODEX_SESSIONS_DIR`: defaults to `$CODEX_HOME/sessions`
 - `CODEX_MODELS_CACHE_FILE`: Codex model cache used by Telegram model buttons, default `$CODEX_HOME/models_cache.json`
 - `CODEX_BASE_URL`, `CODEX_API_KEY`, `CODEX_CONFIG_JSON`, `CODEX_ENV_JSON`: optional `Codex` SDK constructor settings
+- `CODEX_SKIP_GIT_REPO_CHECK`: allow Codex turns outside a Git repository, default `false`; set `true` only when you intentionally want Codex to run outside Git worktrees
 - `CODEX_PERSONA_PROMPT`: optional override style instruction prepended to every Codex turn. Leave it empty to use the built-in prompt matching `TELEGRAM_LANGUAGE`.
 - `TELEGRAM_REACTIONS_ENABLED`: enable processing result reactions on inbound messages, default `true`
 - `TELEGRAM_THINKING_REACTION`, `TELEGRAM_COMPLETE_REACTION`, `TELEGRAM_ERROR_REACTION`, `TELEGRAM_STOPPED_REACTION`: reaction emoji for processing states
@@ -109,6 +112,11 @@ Then run:
 ```bash
 npm start
 ```
+
+Use `/whoami` in the target chat or forum topic to confirm your Telegram user
+id, chat id, and thread id before tightening `ALLOWED_CHAT_IDS` or
+`ALLOWED_THREAD_IDS`. Callback buttons use the same user/chat/thread guard as
+normal messages.
 
 ## GitHub Automation
 

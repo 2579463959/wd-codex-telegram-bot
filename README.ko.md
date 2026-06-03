@@ -52,11 +52,14 @@ cp .env.minimal.example .env
 
 - `TELEGRAM_BOT_TOKEN`: `@BotFather`에서 받은 Telegram bot token
 - `ALLOWED_USER_IDS`: 허용할 Telegram 숫자 user id를 쉼표로 구분
+- `ALLOWED_CHAT_IDS`: 선택값. 설정하면 해당 chat id에서만 허용
+- `ALLOWED_THREAD_IDS`: 선택값. 설정하면 해당 forum topic/thread id에서만 허용
 - `CODEX_WORKDIR`: 기본값은 `$HOME`
 - `CODEX_PATH`: Codex 실행 파일, 기본값은 `codex`. Codex가 `PATH`에 없다면 명시적으로 지정하세요.
 - `CODEX_SESSIONS_DIR`: 기본값은 `$CODEX_HOME/sessions`
 - `CODEX_MODELS_CACHE_FILE`: Telegram 모델 버튼에 쓰는 Codex 모델 cache, 기본값은 `$CODEX_HOME/models_cache.json`
 - `CODEX_BASE_URL`, `CODEX_API_KEY`, `CODEX_CONFIG_JSON`, `CODEX_ENV_JSON`: 선택적 `Codex` SDK 생성자 설정
+- `CODEX_SKIP_GIT_REPO_CHECK`: Git 저장소 밖 Codex turn 허용 여부. 기본값은 `false`이며 명시적으로 필요할 때만 `true`로 설정하세요.
 - `CODEX_PERSONA_PROMPT`: 모든 Codex turn 앞에 붙일 선택적 style instruction. 비워두면 `TELEGRAM_LANGUAGE`에 맞는 내장 prompt를 사용합니다.
 - `TELEGRAM_REACTIONS_ENABLED`: inbound 메시지 처리 결과 reaction 사용 여부, 기본값 `true`
 - `TELEGRAM_THINKING_REACTION`, `TELEGRAM_COMPLETE_REACTION`, `TELEGRAM_ERROR_REACTION`, `TELEGRAM_STOPPED_REACTION`: 처리 상태별 reaction emoji
