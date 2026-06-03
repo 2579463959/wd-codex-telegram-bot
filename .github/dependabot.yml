@@ -2,15 +2,6 @@ version: 2
 updates:
   - package-ecosystem: npm
     directory: /
-    allow:
-      - dependency-name: "@openai/codex-sdk"
-      - dependency-name: "@openai/codex"
-    schedule:
-      interval: daily
-    open-pull-requests-limit: 2
-
-  - package-ecosystem: npm
-    directory: /
     ignore:
       - dependency-name: "@openai/codex-sdk"
       - dependency-name: "@openai/codex"
