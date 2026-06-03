@@ -18,6 +18,10 @@ npm audit --audit-level=moderate
 npm pack --dry-run --json
 ```
 
+`npm run format:check` currently covers package metadata and GitHub workflow
+YAML formatting. Broader documentation formatting should be handled as a
+separate change.
+
 Confirm the dry-run package includes runtime source, docs, assets, systemd
 files, and executable bin entries.
 
@@ -49,7 +53,8 @@ Run these from the authorized chat or forum topic:
 - queue mode checks for `safe`, `interrupt`, and `side`
 - `/backup`
 - `/cleanup_status`
-- `/cleanup_uploads`
+- `/cleanup_uploads`, then press `Confirm upload cleanup` only against a
+  disposable staging upload directory
 
 For queue mode checks, keep prompts small and verify the active turn, queued
 turn, and side turn statuses behave as expected.

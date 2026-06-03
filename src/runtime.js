@@ -12,8 +12,14 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { Codex } from "@openai/codex-sdk";
 import { Telegraf } from "telegraf";
+import { bootstrapBot } from "./app/bootstrap.js";
+import { buildInput, mergeReplyContext } from "./codex/input.js";
+import { applyCodexStreamEvent, codexStreamItems, codexStreamResult, createCodexStreamState } from "./codex/stream.js";
 import { readConfig as readRuntimeConfig } from "./config.js";
+import { renderHandoffMarkdown, sanitizeHandoffFilename, sessionHighlightFromItem } from "./handoff.js";
 import { LANGUAGE_CHOICES, TELEGRAM_LANGUAGE_CODES, VALID_LANGUAGES, textFor } from "./i18n.js";
+import { createCleanupArtifact, finalizeCleanupArtifact } from "./maintenance/cleanup.js";
+import { parseCodexMaintenanceOutput } from "./maintenance/codex.js";
 import {
   dequeueNextTurn,
   enqueueTurn,
@@ -29,7 +35,17 @@ import { b, code, escapeHtml, pre, stripHtml } from "./telegram/html.js";
 import { formatCodexAnswerMarkdownHtml, formatCodexAnswerSafeHtml } from "./telegram/markdown.js";
 import { splitMarkdownAware, splitText } from "./telegram/split.js";
 import { isRegisteredTelegramCommandText } from "./telegram_commands.js";
-import { buildUploadCleanupPlanFromDisk, deleteUploadCandidates, shouldRunUploadCleanup } from "./uploads.js";
+import {
+  buildUploadCleanupPlanFromDisk,
+  confirmUploadCleanupPlan,
+  createUploadCleanupPlanLogEntry,
+  createUploadCleanupPlanRecord,
+  createUploadCleanupResultLogEntry,
+  deleteUploadCandidates,
+  shouldRunUploadCleanup
+} from "./uploads.js";
+import { booleanOptionKeyboardRows } from "./ui/keyboards.js";
+import { formatSettingPanelHtml } from "./ui/panels.js";
 
 const execFileAsync = promisify(execFile);
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -764,14 +780,15 @@ bot.command("cleanup_status", async (ctx) => {
 
 bot.command("cleanup_uploads", async (ctx) => {
   const plan = await createUploadCleanupPlan({ dryRun: true });
-  await replyHtml(ctx, formatUploadCleanupPlanHtml(plan));
+  const record = createUploadCleanupPlanRecord(plan);
+  state.uploadCleanup.plans[record.id] = record;
+  await appendCleanupLog(createUploadCleanupPlanLogEntry(plan, { planId: record.id, at: record.createdAt }));
+  await saveState(config.stateFile, state);
+  await replyHtml(ctx, formatUploadCleanupPlanHtml(plan, record), uploadCleanupKeyboard(record.id));
 });
 
 bot.command("cleanup_uploads_confirm", async (ctx) => {
-  const plan = await createUploadCleanupPlan({ dryRun: false });
-  const result = await deleteUploadCandidates(plan.candidates, { dryRun: false, rootDir: config.uploadDir });
-  await appendCleanupLog({ type: "upload_cleanup", result, at: new Date().toISOString() });
-  await replyHtml(ctx, formatUploadCleanupResultHtml(plan, result));
+  await replyHtml(ctx, `${b("Upload cleanup confirmation changed")}\nRun ${code("/cleanup_uploads")} and press the ${code("Confirm upload cleanup")} button. This command no longer deletes files.`);
 });
 
 async function handleCleanupCommand(ctx, overrideArg = null) {
@@ -814,6 +831,35 @@ bot.action(/^cleanup:(quarantine|delete|both|ignore):([a-zA-Z0-9_-]+)$/, async (
   await appendCleanupLog({ type: "apply", action, planId, result, at: new Date().toISOString() });
   await saveState(config.stateFile, state);
   await editCleanupMessage(ctx, formatCleanupResultHtml(action, result, plan));
+});
+
+bot.action(/^upload_cleanup_confirm:([a-zA-Z0-9_-]+)$/, async (ctx) => {
+  const [, planId] = ctx.match;
+  const record = state.uploadCleanup?.plans?.[planId];
+  const confirmation = confirmUploadCleanupPlan(record);
+  if (!confirmation.ok) {
+    await answerUploadCleanupCallback(ctx, confirmation.reason);
+    if (confirmation.reason === "expired_plan" && state.uploadCleanup?.plans) {
+      delete state.uploadCleanup.plans[planId];
+      await saveState(config.stateFile, state);
+    }
+    await editUploadCleanupMessage(ctx, `${b("Upload cleanup plan unavailable")}\nRun ${code("/cleanup_uploads")} to generate a fresh preview.`);
+    return;
+  }
+
+  await answerUploadCleanupCallback(ctx, "confirm");
+  await editOrReplyHtml(ctx, formatUploadCleanupProcessingHtml(record), inlineKeyboard([
+    [{ text: "Processing", callback_data: `upload_cleanup_processing:${planId}` }]
+  ]));
+  const result = await deleteUploadCandidates(confirmation.plan.candidates, { dryRun: false, rootDir: config.uploadDir });
+  delete state.uploadCleanup.plans[planId];
+  await appendCleanupLog(createUploadCleanupResultLogEntry(planId, confirmation.plan, result));
+  await saveState(config.stateFile, state);
+  await editUploadCleanupMessage(ctx, formatUploadCleanupResultHtml(confirmation.plan, result));
+});
+
+bot.action(/^upload_cleanup_processing:([a-zA-Z0-9_-]+)$/, async (ctx) => {
+  await answerUploadCleanupCallback(ctx, "processing");
 });
 
 bot.action(/^cleanup:processing:([a-zA-Z0-9_-]+)$/, async (ctx) => {
@@ -941,21 +987,15 @@ bot.on("message", async (ctx) => {
   await ctx.reply("Only text messages and image attachments are supported.");
 });
 
-await ensureDirectory(config.codexWorkdir, "CODEX_WORKDIR");
-await fs.mkdir(config.uploadDir, { recursive: true });
-await fs.mkdir(config.cleanupQuarantineDir, { recursive: true });
-await fs.mkdir(config.backupDir, { recursive: true });
-startCleanupScheduler();
-startStateSnapshotScheduler();
-registerTelegramCommands().catch((error) => {
-  console.warn("Telegram command menu registration failed:", error instanceof Error ? error.message : String(error));
+await bootstrapBot({
+  bot,
+  config,
+  ensureDirectory,
+  registerTelegramCommands,
+  startCleanupScheduler,
+  startPersistedQueues,
+  startStateSnapshotScheduler
 });
-await bot.launch();
-console.log("codex-telegram-bot started");
-startPersistedQueues();
-
-process.once("SIGINT", () => bot.stop("SIGINT"));
-process.once("SIGTERM", () => bot.stop("SIGTERM"));
 
 async function handleCodexMessage(ctx, text, loadImages) {
   const chatKey = getChatKey(ctx);
@@ -1195,40 +1235,31 @@ async function runCodexTurn(ctx, chatKey, thread, input, signal, workingMessageI
   }
 
   const { events } = await thread.runStreamed(input, turnOptions);
-  const items = new Map();
-  let finalResponse = "";
-  let usage = null;
+  const streamState = createCodexStreamState();
   let lastProgressAt = 0;
   const progressState = liveProgress;
 
   for await (const event of events) {
-    if (event.type === "thread.started") {
+    const update = applyCodexStreamEvent(streamState, event);
+    if (update.type === "thread_started") {
       if (options.rememberThreadId !== false) {
         const chat = getChatState(chatKey);
-        chat.threadId = event.thread_id;
+        chat.threadId = update.threadId;
         await saveState(config.stateFile, state);
       }
-    } else if (event.type === "turn.started") {
-      // Handled by live progress below.
-    } else if (event.type === "item.started" || event.type === "item.updated" || event.type === "item.completed") {
-      items.set(event.item.id, event.item);
-      if (event.item.type === "agent_message") finalResponse = event.item.text;
+    } else if (update.type === "item") {
       const now = Date.now();
       if (workingMessageId && now - lastProgressAt > runtimeValue("progressEditIntervalMs")) {
         lastProgressAt = now;
-        await editMessageQuietly(ctx, workingMessageId, summarizeProgress([...items.values()]));
+        await editMessageQuietly(ctx, workingMessageId, summarizeProgress(codexStreamItems(streamState)));
       }
-    } else if (event.type === "turn.completed") {
-      usage = event.usage;
-    } else if (event.type === "turn.failed") {
-      throw new Error(event.error.message);
-    } else if (event.type === "error") {
-      throw new Error(event.message);
+    } else if (update.type === "error") {
+      throw new Error(update.message);
     }
-    await maybeSendLiveProgress(ctx, progressState, event, [...items.values()]);
+    await maybeSendLiveProgress(ctx, progressState, event, codexStreamItems(streamState));
   }
 
-  return { items: [...items.values()], finalResponse, usage };
+  return codexStreamResult(streamState);
 }
 
 function buildCodexOptions(serviceTier = "") {
@@ -1592,14 +1623,6 @@ function ensureTurnContext(turn) {
   return turn.ctx;
 }
 
-function buildInput(text, imagePaths) {
-  if (imagePaths.length === 0) return text;
-  return [
-    { type: "text", text },
-    ...imagePaths.map((imagePath) => ({ type: "local_image", path: imagePath }))
-  ];
-}
-
 async function buildReplyContext(ctx) {
   const message = ctx.message?.reply_to_message;
   if (!message) return { text: "", imagePaths: [] };
@@ -1622,21 +1645,6 @@ async function buildReplyContext(ctx) {
 
   if (imagePaths.length > 0) parts.push(`[attached ${imagePaths.length} replied-to image(s)]`);
   return { text: parts.join("\n"), imagePaths };
-}
-
-function mergeReplyContext(text, replyContext) {
-  if (!replyContext.text) return text;
-  return [
-    "Use the following replied-to Telegram message as context.",
-    "",
-    "<replied_message>",
-    replyContext.text,
-    "</replied_message>",
-    "",
-    "<current_message>",
-    text,
-    "</current_message>"
-  ].join("\n");
 }
 
 function applyPersonaPrompt(text) {
@@ -1739,6 +1747,9 @@ function normalizeState(parsed) {
     cleanup: {
       lastDailyDate: stateValue.cleanup?.lastDailyDate ?? "",
       plans: stateValue.cleanup?.plans && typeof stateValue.cleanup.plans === "object" ? stateValue.cleanup.plans : {}
+    },
+    uploadCleanup: {
+      plans: stateValue.uploadCleanup?.plans && typeof stateValue.uploadCleanup.plans === "object" ? stateValue.uploadCleanup.plans : {}
     },
     maintenance: {
       autoSqliteRepairEnabled: typeof stateValue.maintenance?.autoSqliteRepairEnabled === "boolean"
@@ -2028,7 +2039,12 @@ function summarizeCleanupPlan(plan) {
 
 async function applyCleanupPlan(plan, action) {
   const result = { quarantined: 0, deleted: 0, skipped: 0, errors: [] };
-  const artifact = await createCleanupArtifact(plan, action);
+  const artifact = await createCleanupArtifact({
+    plan,
+    action,
+    cleanupArtifactDir: config.cleanupArtifactDir,
+    dateKey: getLocalDateKey()
+  });
   result.artifactDir = artifact.dir;
   result.manifest = artifact.manifest;
   result.restoreScript = artifact.restoreScript;
@@ -2116,53 +2132,11 @@ function formatCleanupMaintenanceSummaryLines(report) {
   ];
 }
 
-async function createCleanupArtifact(plan, action) {
-  const safePlanId = String(plan.id || "plan").replace(/[^a-zA-Z0-9_-]/g, "_");
-  const dir = path.join(config.cleanupArtifactDir, `${getLocalDateKey()}-${safePlanId}-${action}`);
-  const deleteBackupDir = path.join(dir, "delete-backup");
-  const manifest = path.join(dir, "manifest.jsonl");
-  const restoreScript = path.join(dir, "restore-cleanup.py");
-  await fs.mkdir(dir, { recursive: true });
-  await fs.mkdir(deleteBackupDir, { recursive: true });
-  await fs.writeFile(path.join(dir, "plan.json"), `${JSON.stringify(plan, null, 2)}\n`, "utf8");
-  await fs.writeFile(restoreScript, cleanupRestoreScript(manifest), "utf8");
-  return { dir, deleteBackupDir, manifest, restoreScript };
-}
-
-async function finalizeCleanupArtifact(artifact, operations, result) {
-  const lines = operations.map((operation) => JSON.stringify(operation));
-  await fs.writeFile(artifact.manifest, `${lines.join("\n")}${lines.length ? "\n" : ""}`, "utf8");
-  await fs.writeFile(path.join(artifact.dir, "result.json"), `${JSON.stringify(result, null, 2)}\n`, "utf8");
-}
-
-function cleanupRestoreScript(manifestPath) {
-  return `#!/usr/bin/env python3
-import json
-import shutil
-from pathlib import Path
-
-manifest = Path(${JSON.stringify(manifestPath)})
-for line in manifest.read_text(encoding="utf-8").splitlines():
-    rec = json.loads(line)
-    if rec.get("type") == "quarantine":
-        src = Path(rec["to"])
-        dest = Path(rec["from"])
-        if src.exists():
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(src), str(dest))
-    elif rec.get("type") == "delete":
-        src = Path(rec["backup"])
-        dest = Path(rec["from"])
-        if src.exists():
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dest)
-        meta = Path(str(src) + ".cleanup.json")
-        if meta.exists():
-            shutil.copy2(meta, Path(str(dest) + ".cleanup.json"))
-`;
-}
-
 async function editCleanupMessage(ctx, html) {
+  return editOrReplyHtml(ctx, html, { reply_markup: { inline_keyboard: [] } });
+}
+
+async function editUploadCleanupMessage(ctx, html) {
   return editOrReplyHtml(ctx, html, { reply_markup: { inline_keyboard: [] } });
 }
 
@@ -2197,6 +2171,21 @@ async function answerCleanupCallback(ctx, action) {
     await ctx.answerCbQuery(cleanupCallbackText(action));
   } catch (error) {
     console.warn("cleanup callback answer failed:", error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function answerUploadCleanupCallback(ctx, status) {
+  const text = status === "confirm"
+    ? "Deleting selected upload cleanup candidates..."
+    : status === "expired_plan"
+      ? "Upload cleanup plan expired."
+      : status === "processing"
+        ? "Upload cleanup is already processing."
+        : "Upload cleanup plan not found.";
+  try {
+    await ctx.answerCbQuery(text);
+  } catch (error) {
+    console.warn("upload cleanup callback answer failed:", error instanceof Error ? error.message : String(error));
   }
 }
 
@@ -2377,6 +2366,7 @@ async function runDailyCleanupCheck() {
   await runDailyUploadCleanupIfEnabled();
   state.cleanup.lastDailyDate = clock.dateKey;
   pruneExpiredCleanupPlans();
+  pruneExpiredUploadCleanupPlans();
   await saveState(config.stateFile, state);
 }
 
@@ -2386,14 +2376,7 @@ async function runDailyUploadCleanupIfEnabled() {
     uploadCleanupEnabled: config.uploadCleanupEnabled
   })) return;
   const plan = await createUploadCleanupPlan({ dryRun: true });
-  await appendCleanupLog({
-    type: "upload_cleanup_plan",
-    dryRun: true,
-    candidates: plan.candidates.length,
-    candidateBytes: plan.candidateBytes,
-    totalBytes: plan.totalBytes,
-    at: plan.generatedAt
-  });
+  await appendCleanupLog(createUploadCleanupPlanLogEntry(plan));
 }
 
 async function runAutomaticCodexMaintenanceIfEnabled() {
@@ -2431,6 +2414,13 @@ function pruneExpiredCleanupPlans() {
   const now = Date.now();
   for (const [planId, plan] of Object.entries(state.cleanup.plans)) {
     if (!plan?.expiresAt || Date.parse(plan.expiresAt) < now) delete state.cleanup.plans[planId];
+  }
+}
+
+function pruneExpiredUploadCleanupPlans() {
+  const now = Date.now();
+  for (const [planId, record] of Object.entries(state.uploadCleanup.plans)) {
+    if (!record?.expiresAt || Date.parse(record.expiresAt) < now) delete state.uploadCleanup.plans[planId];
   }
 }
 
@@ -3064,12 +3054,11 @@ async function fastPanelHtml(chatKey) {
 }
 
 function settingPanelHtml(title, current, description) {
-  return [
-    b(tf("settingPanelTitle", { title })),
-    `Current: ${code(current)}`,
-    "",
+  return formatSettingPanelHtml({
+    titleText: tf("settingPanelTitle", { title }),
+    current,
     description
-  ].join("\n");
+  });
 }
 
 function pathsPanelHtml(chatKey) {
@@ -3327,14 +3316,7 @@ function webSearchKeyboard() {
 }
 
 function booleanOptionKeyboard(key) {
-  return inlineKeyboard([
-    [
-      { text: "default", callback_data: `set:${key}:default` },
-      { text: "on", callback_data: `set:${key}:on` },
-      { text: "off", callback_data: `set:${key}:off` }
-    ],
-    [{ text: t("settings"), callback_data: "p:settings" }]
-  ]);
+  return inlineKeyboard(booleanOptionKeyboardRows(key, t("settings")));
 }
 
 function liveProgressKeyboard() {
@@ -4010,7 +3992,7 @@ async function runCodexMaintenance(action) {
     args.push("--backup-root", path.join(config.codexMaintenanceBackupDir, `${getLocalDateKey()}-${action}-${Date.now()}`));
   }
   const { stdout } = await execFileAsync("python3", args, { timeout: 300000, maxBuffer: 4 * 1024 * 1024 });
-  return JSON.parse(stdout);
+  return parseCodexMaintenanceOutput(stdout);
 }
 
 function formatCodexMaintenanceReportHtml(report) {
@@ -4093,7 +4075,7 @@ async function createThreadHandoff(threadId) {
   const highlights = await readSessionHighlights(sessionFile, config.codexHandoffRecentEvents);
   const targetDir = await resolveHandoffDir(meta?.cwd);
   await fs.mkdir(targetDir, { recursive: true });
-  const file = path.join(targetDir, `${getLocalDateKey()}-${sanitizeFilename((meta?.cwd || "codex").split(path.sep).filter(Boolean).pop() || "codex")}-${threadId.slice(0, 8)}.md`);
+  const file = path.join(targetDir, `${getLocalDateKey()}-${sanitizeHandoffFilename((meta?.cwd || "codex").split(path.sep).filter(Boolean).pop() || "codex")}-${threadId.slice(0, 8)}.md`);
   const body = renderHandoffMarkdown({
     threadId,
     sessionFile,
@@ -4139,83 +4121,6 @@ async function readSessionHighlights(file, limit) {
   return highlights;
 }
 
-function sessionHighlightFromItem(item) {
-  const timestamp = item?.timestamp || "";
-  const payload = item?.payload || {};
-  if (item?.type === "event_msg" && payload.type === "agent_message") {
-    return { timestamp, kind: "assistant-comment", text: payload.message || "" };
-  }
-  if (item?.type !== "response_item") return null;
-  if (payload.type === "message" && ["user", "assistant"].includes(payload.role)) {
-    const text = extractContentText(payload.content);
-    if (!text) return null;
-    return { timestamp, kind: payload.role, text };
-  }
-  if (payload.type === "function_call") {
-    return { timestamp, kind: "tool-call", text: `${payload.name || "tool"} ${truncate((payload.arguments || "").replace(/\s+/g, " "), 220)}` };
-  }
-  if (payload.type === "function_call_output") {
-    return { timestamp, kind: "tool-output", text: truncate(String(payload.output || "").replace(/\s+/g, " "), 260) };
-  }
-  return null;
-}
-
-function extractContentText(content) {
-  if (!Array.isArray(content)) return "";
-  return content
-    .map((entry) => entry?.text || "")
-    .filter(Boolean)
-    .join("\n")
-    .trim();
-}
-
-function renderHandoffMarkdown({ threadId, sessionFile, meta, highlights, generatedAt }) {
-  const title = `Codex Handoff ${threadId.slice(0, 8)}`;
-  const lines = [
-    `# ${title}`,
-    "",
-    "## Reactivation Prompt",
-    "",
-    "We are continuing from this handoff. Read this document first, inspect the current repo state, verify what still applies, and continue from the next steps without assuming the old chat context is available.",
-    "",
-    "## Session",
-    "",
-    `- thread_id: \`${threadId}\``,
-    `- generated_at: \`${generatedAt}\``,
-    `- cwd: \`${meta?.cwd || "unknown"}\``,
-    `- source: \`${meta?.source || "unknown"}\``,
-    `- originator: \`${meta?.originator || "unknown"}\``,
-    `- session_file: \`${sessionFile}\``,
-    "",
-    "## Current State",
-    "",
-    "- This is an automatic handoff draft generated from local Codex session metadata.",
-    "- Review the current git status and project instructions before continuing.",
-    "- Treat the recent highlights below as a navigation aid, not as a complete transcript.",
-    "",
-    "## Recent Highlights",
-    ""
-  ];
-  if (highlights.length === 0) {
-    lines.push("- No readable recent highlights were found.");
-  } else {
-    for (const item of highlights) {
-      lines.push(`- ${item.timestamp ? `\`${item.timestamp}\` ` : ""}${item.kind}: ${truncateMarkdownLine(item.text, 320)}`);
-    }
-  }
-  lines.push(
-    "",
-    "## Next Steps",
-    "",
-    "1. Read project-local `AGENTS.md` or equivalent instructions.",
-    "2. Check `git status --short --branch` in the repo.",
-    "3. Re-open the files mentioned in the recent highlights.",
-    "4. Continue from the latest user request, keeping changes scoped and verified.",
-    ""
-  );
-  return `${lines.join("\n")}`;
-}
-
 function formatHandoffResultHtml(result) {
   return formatKeyValueHtml(t("handoffResultTitle"), [
     ["thread", result.threadId],
@@ -4223,18 +4128,6 @@ function formatHandoffResultHtml(result) {
     ["cwd", result.cwd || "unknown"],
     ["highlights", cleanupCount(result.highlights)]
   ]);
-}
-
-function sanitizeFilename(value) {
-  return String(value || "codex")
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 48) || "codex";
-}
-
-function truncateMarkdownLine(value, max) {
-  return truncate(String(value || "").replace(/\s+/g, " ").replaceAll("`", "'"), max);
 }
 
 function formatConfigHtml() {
@@ -4596,7 +4489,7 @@ async function formatHealthHtml() {
   ]);
 }
 
-function formatUploadCleanupPlanHtml(plan) {
+function formatUploadCleanupPlanHtml(plan, record = null) {
   const lines = [
     b("Upload cleanup plan"),
     `mode: ${code(plan.dryRun ? "dry-run" : "confirm")}`,
@@ -4604,13 +4497,31 @@ function formatUploadCleanupPlanHtml(plan) {
     `retention: ${code(`${plan.retentionDays}d`)}`,
     `max bytes: ${code(plan.maxBytes > 0 ? formatBytes(plan.maxBytes) : "off")}`,
     `total uploads: ${code(`${cleanupCount(plan.candidates.length + plan.preserved.length)} / ${formatBytes(plan.totalBytes)}`)}`,
-    `cleanup candidates: ${code(`${cleanupCount(plan.candidates.length)} / ${formatBytes(plan.candidateBytes)}`)}`,
-    `No files are deleted until ${code("/cleanup_uploads_confirm")}.`
+    `cleanup candidates: ${code(`${cleanupCount(plan.candidates.length)} / ${formatBytes(plan.candidateBytes)}`)}`
   ];
+  if (record) {
+    lines.push(`plan id: ${code(record.id)}`);
+    lines.push(`expires: ${code(formatDateTime(record.expiresAt))}`);
+  }
+  lines.push(`No files are deleted until the ${code("Confirm upload cleanup")} button is pressed.`);
   for (const candidate of plan.candidates.slice(0, 8)) {
     lines.push(`- ${code(path.basename(candidate.path))}: ${code(formatBytes(candidate.bytes ?? 0))}`);
   }
   return lines.join("\n");
+}
+
+function uploadCleanupKeyboard(planId) {
+  return inlineKeyboard([
+    [{ text: "Confirm upload cleanup", callback_data: `upload_cleanup_confirm:${planId}` }]
+  ]);
+}
+
+function formatUploadCleanupProcessingHtml(record) {
+  return [
+    b("Upload cleanup processing"),
+    `plan id: ${code(record.id)}`,
+    `candidates: ${code(record.plan.candidates.length)}`
+  ].join("\n");
 }
 
 function formatUploadCleanupResultHtml(plan, result) {

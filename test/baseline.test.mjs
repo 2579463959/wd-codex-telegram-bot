@@ -44,6 +44,8 @@ test("public CI keeps baseline verification commands", async () => {
   assert.match(workflow, /npm run verify/);
   assert.match(workflow, /npm pack --dry-run --json/);
   assert.match(workflow, /npm run build --if-present/);
+  assert.match(workflow, /node-version: \[18, 20, 22\]/);
+  assert.match(workflow, /node-version: \$\{\{ matrix\.node-version \}\}/);
 });
 
 test("bot entrypoint stays thin and runtime stays packaged", async () => {

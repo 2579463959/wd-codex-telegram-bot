@@ -66,9 +66,9 @@ cp .env.minimal.example .env
 `.env`를 수정합니다.
 
 - `TELEGRAM_BOT_TOKEN`: `@BotFather`에서 받은 Telegram bot token
-- `ALLOWED_USER_IDS`: 허용할 Telegram 숫자 user id를 쉼표로 구분
-- `ALLOWED_CHAT_IDS`: 선택값. 설정하면 해당 chat id에서만 허용
-- `ALLOWED_THREAD_IDS`: 선택값. 설정하면 해당 forum topic/thread id에서만 허용
+- `ALLOWED_USER_IDS`: 허용할 양수 Telegram numeric user id를 쉼표로 구분
+- `ALLOWED_CHAT_IDS`: 선택값. numeric chat id를 쉼표로 구분합니다. group/supergroup의 음수 chat id도 허용됩니다. 설정하면 해당 chat id에서만 허용됩니다.
+- `ALLOWED_THREAD_IDS`: 선택값. 양수 forum topic/thread id를 쉼표로 구분합니다. 설정하면 해당 forum topic/thread id에서만 허용됩니다.
 - `CODEX_WORKDIR`: 기본값은 `$HOME`
 - `CODEX_PATH`: Codex 실행 파일, 기본값은 `codex`. Codex가 `PATH`에 없다면 명시적으로 지정하세요.
 - `CODEX_SESSIONS_DIR`: 기본값은 `$CODEX_HOME/sessions`
@@ -92,6 +92,7 @@ cp .env.minimal.example .env
 - `TELEGRAM_LIVE_PROGRESS_DELETE_POLICY`: `always`, `on_success`, `never`; 임시 진행 메시지를 언제 삭제할지 선택, 기본값 `on_success`
 - `CLEANUP_ENABLED`: 매일 Codex thread cleanup 후보 알림 사용 여부, 기본값 `true`
 - `CLEANUP_NOTIFY_TIME`: `TELEGRAM_TIME_ZONE` 기준 cleanup 알림 시간, 기본값 `09:00`
+- `CLEANUP_NOTIFY_CHAT_IDS`: 선택값. daily cleanup 알림을 보낼 numeric chat id 목록. group/supergroup의 음수 chat id도 허용됩니다.
 - `CLEANUP_RETENTION_DAYS`: 이 일수보다 오래된 session을 격리 후보로 표시, 기본값 `14`
 - `CLEANUP_QUARANTINE_DAYS`: 격리 후 이 일수보다 오래된 session을 영구 삭제 후보로 표시, 기본값 `7`
 - `CLEANUP_QUARANTINE_DIR`: 격리 directory, 기본값 `$CODEX_HOME/session-quarantine`
@@ -198,7 +199,7 @@ PR 체크리스트와 locale metadata 형식은 `docs/translations.md`에 정리
 - `/cancelqueue [id|number]`: 모든 queue 메시지를 지우거나, id 또는 1-based number로 queue item 하나 제거
 - `/forget`: 저장된 thread binding 제거
 - `/cleanup`, `/cleanup_status`: cleanup 후보와 승인 버튼 표시
-- `/cleanup_uploads`, `/cleanup_uploads_confirm`: 오래된 다운로드 Telegram 이미지 입력 삭제를 preview 또는 confirm
+- `/cleanup_uploads`, `/cleanup_uploads_confirm`: 오래된 다운로드 Telegram 이미지 입력을 preview하며, 삭제는 inline confirm 버튼으로만 실행
 - `/backup`: bot state와 cleanup log의 redacted JSON backup을 생성하고 업로드
 - `/export`: 현재 chat의 thread/options export 생성 및 업로드
 - `/prefs`, `/prefs_reset`: thread를 잊지 않고 현재 chat preference를 표시하거나 초기화
@@ -269,7 +270,7 @@ Secret, token, 절대경로, process-level Codex SDK constructor value는 계속
 수동 검토는 `/cleanup`으로 할 수 있습니다.
 
 다운로드한 Telegram 이미지 입력은 Codex로 보내기 전에 `UPLOAD_DIR` 아래에 저장됩니다.
-`/cleanup_uploads`는 `UPLOAD_RETENTION_DAYS`보다 오래되었거나 `UPLOAD_MAX_BYTES` 아래로 줄이기 위해 선택된 파일을 미리 보여주고, `/cleanup_uploads_confirm`은 설정된 upload directory 안의 후보만 삭제합니다.
+`/cleanup_uploads`는 `UPLOAD_RETENTION_DAYS`보다 오래되었거나 `UPLOAD_MAX_BYTES` 아래로 줄이기 위해 선택된 파일을 미리 보여주며, 실제 삭제는 inline `Confirm upload cleanup` 버튼을 누를 때만 실행됩니다. 기존 `/cleanup_uploads_confirm` typed command는 `/cleanup_uploads` 안내만 하고 파일을 삭제하지 않습니다.
 
 `/tools` panel에는 keep-codex-fast-style maintenance를 위한 `Codex Maintenance`도 포함됩니다. Report action은 read-only입니다. Backup, config prune, worktree archive, log rotate는 backup-first로 동작하고 permanent deletion을 피합니다. SQLite metadata repair는 별도의 명시적 버튼입니다. 먼저 백업하고, thread-list title/preview metadata만 짧게 줄이며, session JSONL transcript는 그대로 둡니다. Active thread handoff 생성도 버튼으로 사용할 수 있고, 가능하면 repo-local `docs/codex-handoffs` draft를 작성합니다. Automatic repair와 automatic handoff generation은 모두 기본적으로 off입니다. Telegram maintenance menu에서 이 automatic option을 runtime에 toggle할 수 있으며, 저장된 state는 첫 startup에서 environment value를 기본값으로 사용합니다.
 

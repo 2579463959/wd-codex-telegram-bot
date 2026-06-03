@@ -76,9 +76,9 @@ cp .env.minimal.example .env
 Edit `.env`:
 
 - `TELEGRAM_BOT_TOKEN`: token from `@BotFather`
-- `ALLOWED_USER_IDS`: comma-separated Telegram numeric user ids
-- `ALLOWED_CHAT_IDS`: optional comma-separated chat ids. When set, authorized users are accepted only in these chats.
-- `ALLOWED_THREAD_IDS`: optional comma-separated forum topic/thread ids. When set, authorized users are accepted only in these threads.
+- `ALLOWED_USER_IDS`: comma-separated positive Telegram numeric user ids
+- `ALLOWED_CHAT_IDS`: optional comma-separated numeric chat ids. Negative group/supergroup chat ids are allowed. When set, authorized users are accepted only in these chats.
+- `ALLOWED_THREAD_IDS`: optional comma-separated positive forum topic/thread ids. When set, authorized users are accepted only in these threads.
 - `CODEX_WORKDIR`: defaults to `$HOME`
 - `CODEX_PATH`: Codex executable, default `codex`. Set this explicitly if Codex is not on `PATH`.
 - `CODEX_SESSIONS_DIR`: defaults to `$CODEX_HOME/sessions`
@@ -102,6 +102,7 @@ Edit `.env`:
 - `TELEGRAM_LIVE_PROGRESS_DELETE_POLICY`: `always`, `on_success`, or `never`; choose when temporary progress messages are deleted, default `on_success`
 - `CLEANUP_ENABLED`: enable the daily Codex thread cleanup reminder, default `true`
 - `CLEANUP_NOTIFY_TIME`: daily reminder time in `TELEGRAM_TIME_ZONE`, default `09:00`
+- `CLEANUP_NOTIFY_CHAT_IDS`: optional comma-separated numeric chat ids for daily cleanup reminders. Negative group/supergroup chat ids are allowed.
 - `CLEANUP_RETENTION_DAYS`: sessions older than this become quarantine candidates, default `14`
 - `CLEANUP_QUARANTINE_DAYS`: quarantined sessions older than this become permanent delete candidates, default `7`
 - `CLEANUP_QUARANTINE_DIR`: quarantine directory, default `$CODEX_HOME/session-quarantine`
@@ -220,7 +221,7 @@ but remain available for typed use and automation:
 - `/cancelqueue [id|number]`: clear all queued messages, or remove one queued item by id or 1-based number
 - `/forget`: remove the saved thread binding
 - `/cleanup`, `/cleanup_status`: show cleanup candidates and approval buttons
-- `/cleanup_uploads`, `/cleanup_uploads_confirm`: preview or confirm deletion of old downloaded Telegram image inputs
+- `/cleanup_uploads`, `/cleanup_uploads_confirm`: preview old downloaded Telegram image inputs; deletion requires the inline confirm button
 - `/backup`: create and upload a redacted JSON backup of bot state and cleanup log
 - `/export`: create and upload the current chat's thread/options export
 - `/prefs`, `/prefs_reset`: show or reset the current chat's preferences without forgetting the thread
@@ -329,8 +330,10 @@ Manual review is available with `/cleanup`.
 Downloaded Telegram image inputs are stored under `UPLOAD_DIR` before they are
 sent to Codex. `/cleanup_uploads` previews files older than
 `UPLOAD_RETENTION_DAYS` or selected to bring the directory below
-`UPLOAD_MAX_BYTES`; `/cleanup_uploads_confirm` deletes only candidates inside
-the configured upload directory.
+`UPLOAD_MAX_BYTES`; files are deleted only after pressing the inline
+`Confirm upload cleanup` button. The legacy `/cleanup_uploads_confirm` typed
+command now points operators back to `/cleanup_uploads` and does not delete
+files.
 
 The `/tools` panel also includes `Codex Maintenance` for keep-codex-fast-style
 maintenance. Its report action is read-only. Backup, config prune, worktree

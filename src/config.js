@@ -30,10 +30,10 @@ export function readConfig(env = process.env, options = {}) {
     throw new Error("TELEGRAM_BOT_TOKEN is required. Copy .env.example to .env and set it.");
   }
 
-  const allowedUserIds = new Set(parseCsv(env.ALLOWED_USER_IDS));
+  const allowedUserIds = new Set(parseTelegramIdCsv(env.ALLOWED_USER_IDS, "ALLOWED_USER_IDS"));
   if (allowedUserIds.size === 0) throw new Error("ALLOWED_USER_IDS is required.");
-  const allowedChatIds = new Set(parseCsv(env.ALLOWED_CHAT_IDS));
-  const allowedThreadIds = new Set(parseCsv(env.ALLOWED_THREAD_IDS));
+  const allowedChatIds = new Set(parseTelegramIdCsv(env.ALLOWED_CHAT_IDS, "ALLOWED_CHAT_IDS", { allowNegative: true }));
+  const allowedThreadIds = new Set(parseTelegramIdCsv(env.ALLOWED_THREAD_IDS, "ALLOWED_THREAD_IDS"));
 
   const codexApprovalPolicy = env.CODEX_APPROVAL_POLICY?.trim() || "never";
   const codexSandboxMode = env.CODEX_SANDBOX_MODE?.trim() || "workspace-write";
@@ -44,7 +44,7 @@ export function readConfig(env = process.env, options = {}) {
   assertEnum(codexReasoningEffort, CONFIG_VALID.reasoning, "CODEX_REASONING_EFFORT");
   assertEnum(codexWebSearch, CONFIG_VALID.webSearch, "CODEX_WEB_SEARCH");
 
-  const cleanupNotifyChatIds = parseCsv(env.CLEANUP_NOTIFY_CHAT_IDS);
+  const cleanupNotifyChatIds = parseTelegramIdCsv(env.CLEANUP_NOTIFY_CHAT_IDS, "CLEANUP_NOTIFY_CHAT_IDS", { allowNegative: true });
 
   return {
     telegramBotToken,
@@ -174,6 +174,15 @@ function normalizeMultilineEnv(value) {
 
 function parseCsv(value) {
   return (value ?? "").split(",").map((entry) => entry.trim()).filter(Boolean);
+}
+
+function parseTelegramIdCsv(value, label, { allowNegative = false } = {}) {
+  const entries = parseCsv(value);
+  const pattern = allowNegative ? /^-?\d+$/ : /^\d+$/;
+  for (const entry of entries) {
+    if (!pattern.test(entry)) throw new Error(`${label} must contain numeric Telegram ids.`);
+  }
+  return entries;
 }
 
 function parseOptionalBoolean(value) {

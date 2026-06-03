@@ -36,11 +36,35 @@ test("readConfig applies stable defaults from env and options", () => {
 
 test("readConfig parses optional allowed chat and thread ids", () => {
   const config = readTestConfig({
-    ALLOWED_CHAT_IDS: "100, 200",
+    ALLOWED_CHAT_IDS: "100, -200",
     ALLOWED_THREAD_IDS: "300"
   });
-  assert.deepEqual([...config.allowedChatIds], ["100", "200"]);
+  assert.deepEqual([...config.allowedChatIds], ["100", "-200"]);
   assert.deepEqual([...config.allowedThreadIds], ["300"]);
+});
+
+test("readConfig rejects non-numeric Telegram allowlist ids", () => {
+  assert.throws(
+    () => readTestConfig({ ALLOWED_USER_IDS: "42, abc" }),
+    /ALLOWED_USER_IDS must contain numeric Telegram ids/
+  );
+  assert.throws(
+    () => readTestConfig({ ALLOWED_CHAT_IDS: "100, chat" }),
+    /ALLOWED_CHAT_IDS must contain numeric Telegram ids/
+  );
+  assert.throws(
+    () => readTestConfig({ ALLOWED_THREAD_IDS: "-10" }),
+    /ALLOWED_THREAD_IDS must contain numeric Telegram ids/
+  );
+});
+
+test("readConfig validates cleanup notify chat ids like Telegram chat ids", () => {
+  const config = readTestConfig({ CLEANUP_NOTIFY_CHAT_IDS: "-1001234567890, 42" });
+  assert.deepEqual(config.cleanupNotifyChatIds, ["-1001234567890", "42"]);
+  assert.throws(
+    () => readTestConfig({ CLEANUP_NOTIFY_CHAT_IDS: "not-chat" }),
+    /CLEANUP_NOTIFY_CHAT_IDS must contain numeric Telegram ids/
+  );
 });
 
 test("readConfig rejects invalid integer env values", () => {
