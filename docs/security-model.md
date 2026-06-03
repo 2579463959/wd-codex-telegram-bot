@@ -50,3 +50,6 @@ The bot may store:
 
 Keep `state/`, upload directories, backups, and Codex session directories out of
 Git. Before sharing logs, redact tokens, chat ids, paths, and private prompts.
+Use `/cleanup_uploads` before `/cleanup_uploads_confirm` to preview downloaded
+image deletion candidates. Confirmed upload cleanup refuses candidates outside
+the configured upload directory.

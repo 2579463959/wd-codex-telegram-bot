@@ -92,6 +92,10 @@ cp .env.minimal.example .env
 - `CODEX_MAINTENANCE_AUTO_HANDOFF_ENABLED`: daily cleanup scheduler에서 active thread handoff 자동 생성 여부, 기본값 `false`
 - `CODEX_HANDOFF_DIR`: repo-local `docs/codex-handoffs` 경로를 쓸 수 없을 때 사용할 fallback handoff directory, 기본값 `$CODEX_HOME/handoffs`
 - `CODEX_HANDOFF_RECENT_EVENTS`: 생성되는 handoff 문서에 포함할 최근 session highlight 수, 기본값 `40`
+- `UPLOAD_DIR`: Codex로 보내기 전에 다운로드한 Telegram 이미지 입력 저장 위치, 기본값 `./state/uploads`
+- `UPLOAD_RETENTION_DAYS`: 이 일수보다 오래된 이미지 upload를 upload cleanup 후보로 표시, 기본값 `7`
+- `UPLOAD_MAX_BYTES`: upload directory 용량 목표이자 파일별 다운로드 상한 byte, 기본값 `1073741824`, `0`이면 용량 목표와 다운로드 상한 비활성화
+- `UPLOAD_CLEANUP_ENABLED`: daily cleanup scheduler에서 upload cleanup dry-run plan 기록 여부, 기본값 `true`
 - `BACKUP_DIR`: 수동 backup, chat export, daily snapshot 저장 위치, 기본값 `./state/backups`
 - `SNAPSHOT_ENABLED`: daily state snapshot 사용 여부, 기본값 `true`
 - `SNAPSHOT_NOTIFY_TIME`: `TELEGRAM_TIME_ZONE` 기준 daily snapshot 시간, 기본값 `03:30`
@@ -171,6 +175,7 @@ PR 체크리스트와 locale metadata 형식은 `docs/translations.md`에 정리
 - `/cancelqueue [id|number]`: 모든 queue 메시지를 지우거나, id 또는 1-based number로 queue item 하나 제거
 - `/forget`: 저장된 thread binding 제거
 - `/cleanup`, `/cleanup_status`: cleanup 후보와 승인 버튼 표시
+- `/cleanup_uploads`, `/cleanup_uploads_confirm`: 오래된 다운로드 Telegram 이미지 입력 삭제를 preview 또는 confirm
 - `/backup`: bot state와 cleanup log의 redacted JSON backup을 생성하고 업로드
 - `/export`: 현재 chat의 thread/options export 생성 및 업로드
 - `/prefs`, `/prefs_reset`: thread를 잊지 않고 현재 chat preference를 표시하거나 초기화
@@ -239,6 +244,9 @@ Secret, token, 절대경로, process-level Codex SDK constructor value는 계속
 - Approval plan은 `CLEANUP_PLAN_TTL_HOURS` 뒤 만료됩니다.
 
 수동 검토는 `/cleanup`으로 할 수 있습니다.
+
+다운로드한 Telegram 이미지 입력은 Codex로 보내기 전에 `UPLOAD_DIR` 아래에 저장됩니다.
+`/cleanup_uploads`는 `UPLOAD_RETENTION_DAYS`보다 오래되었거나 `UPLOAD_MAX_BYTES` 아래로 줄이기 위해 선택된 파일을 미리 보여주고, `/cleanup_uploads_confirm`은 설정된 upload directory 안의 후보만 삭제합니다.
 
 `/tools` panel에는 keep-codex-fast-style maintenance를 위한 `Codex Maintenance`도 포함됩니다. Report action은 read-only입니다. Backup, config prune, worktree archive, log rotate는 backup-first로 동작하고 permanent deletion을 피합니다. SQLite metadata repair는 별도의 명시적 버튼입니다. 먼저 백업하고, thread-list title/preview metadata만 짧게 줄이며, session JSONL transcript는 그대로 둡니다. Active thread handoff 생성도 버튼으로 사용할 수 있고, 가능하면 repo-local `docs/codex-handoffs` draft를 작성합니다. Automatic repair와 automatic handoff generation은 모두 기본적으로 off입니다. Telegram maintenance menu에서 이 automatic option을 runtime에 toggle할 수 있으며, 저장된 state는 첫 startup에서 environment value를 기본값으로 사용합니다.
 

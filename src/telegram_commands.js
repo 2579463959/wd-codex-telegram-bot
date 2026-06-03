@@ -62,7 +62,9 @@ export const REGISTERED_TELEGRAM_COMMANDS = new Set([
   "cancelqueue",
   "forget",
   "cleanup",
-  "cleanup_status"
+  "cleanup_status",
+  "cleanup_uploads",
+  "cleanup_uploads_confirm"
 ]);
 
 export function isRegisteredTelegramCommandText(message) {

@@ -101,6 +101,10 @@ Edit `.env`:
 - `CODEX_MAINTENANCE_AUTO_HANDOFF_ENABLED`: create active thread handoff docs from the daily cleanup scheduler, default `false`
 - `CODEX_HANDOFF_DIR`: fallback handoff directory when a repo-local `docs/codex-handoffs` path cannot be used, default `$CODEX_HOME/handoffs`
 - `CODEX_HANDOFF_RECENT_EVENTS`: number of recent session highlights included in generated handoff docs, default `40`
+- `UPLOAD_DIR`: directory for Telegram image inputs downloaded before sending them to Codex, default `./state/uploads`
+- `UPLOAD_RETENTION_DAYS`: image uploads older than this become upload cleanup candidates, default `7`
+- `UPLOAD_MAX_BYTES`: upload directory size target and per-file download cap in bytes, default `1073741824`, `0` disables the size target and download cap
+- `UPLOAD_CLEANUP_ENABLED`: include upload cleanup dry-run plans in the daily cleanup scheduler, default `true`
 - `BACKUP_DIR`: manual backup, chat export, and daily snapshot directory, default `./state/backups`
 - `SNAPSHOT_ENABLED`: enable daily state snapshots, default `true`
 - `SNAPSHOT_NOTIFY_TIME`: daily snapshot time in `TELEGRAM_TIME_ZONE`, default `03:30`
@@ -192,6 +196,7 @@ but remain available for typed use and automation:
 - `/cancelqueue [id|number]`: clear all queued messages, or remove one queued item by id or 1-based number
 - `/forget`: remove the saved thread binding
 - `/cleanup`, `/cleanup_status`: show cleanup candidates and approval buttons
+- `/cleanup_uploads`, `/cleanup_uploads_confirm`: preview or confirm deletion of old downloaded Telegram image inputs
 - `/backup`: create and upload a redacted JSON backup of bot state and cleanup log
 - `/export`: create and upload the current chat's thread/options export
 - `/prefs`, `/prefs_reset`: show or reset the current chat's preferences without forgetting the thread
@@ -296,6 +301,12 @@ Default policy:
 - Approval plans expire after `CLEANUP_PLAN_TTL_HOURS`.
 
 Manual review is available with `/cleanup`.
+
+Downloaded Telegram image inputs are stored under `UPLOAD_DIR` before they are
+sent to Codex. `/cleanup_uploads` previews files older than
+`UPLOAD_RETENTION_DAYS` or selected to bring the directory below
+`UPLOAD_MAX_BYTES`; `/cleanup_uploads_confirm` deletes only candidates inside
+the configured upload directory.
 
 The `/tools` panel also includes `Codex Maintenance` for keep-codex-fast-style
 maintenance. Its report action is read-only. Backup, config prune, worktree

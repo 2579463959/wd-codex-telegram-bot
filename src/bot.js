@@ -28,6 +28,7 @@ import { b, code, escapeHtml, pre, stripHtml } from "./telegram/html.js";
 import { formatCodexAnswerMarkdownHtml, formatCodexAnswerSafeHtml } from "./telegram/markdown.js";
 import { splitMarkdownAware, splitText } from "./telegram/split.js";
 import { isRegisteredTelegramCommandText } from "./telegram_commands.js";
+import { buildUploadCleanupPlanFromDisk, deleteUploadCandidates, shouldRunUploadCleanup } from "./uploads.js";
 
 const execFileAsync = promisify(execFile);
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -758,6 +759,18 @@ bot.command("cleanup", async (ctx) => {
 
 bot.command("cleanup_status", async (ctx) => {
   await handleCleanupCommand(ctx, "status");
+});
+
+bot.command("cleanup_uploads", async (ctx) => {
+  const plan = await createUploadCleanupPlan({ dryRun: true });
+  await replyHtml(ctx, formatUploadCleanupPlanHtml(plan));
+});
+
+bot.command("cleanup_uploads_confirm", async (ctx) => {
+  const plan = await createUploadCleanupPlan({ dryRun: false });
+  const result = await deleteUploadCandidates(plan.candidates, { dryRun: false, rootDir: config.uploadDir });
+  await appendCleanupLog({ type: "upload_cleanup", result, at: new Date().toISOString() });
+  await replyHtml(ctx, formatUploadCleanupResultHtml(plan, result));
 });
 
 async function handleCleanupCommand(ctx, overrideArg = null) {
@@ -1739,6 +1752,9 @@ async function downloadTelegramFile(ctx, fileId, ext) {
   const response = await fetch(link.href);
   if (!response.ok) throw new Error(`Telegram file download failed: ${response.status}`);
   const bytes = Buffer.from(await response.arrayBuffer());
+  if (config.uploadMaxBytes > 0 && bytes.length > config.uploadMaxBytes) {
+    throw new Error(`Telegram file exceeds UPLOAD_MAX_BYTES (${formatBytes(bytes.length)} > ${formatBytes(config.uploadMaxBytes)}).`);
+  }
   await fs.mkdir(config.uploadDir, { recursive: true });
   const filename = `${Date.now()}-${fileId.replace(/[^a-zA-Z0-9_-]/g, "")}${ext}`;
   const filePath = path.join(config.uploadDir, filename);
@@ -2450,9 +2466,26 @@ async function runDailyCleanupCheck() {
 
   await sendDailyCleanupPlan();
   await runAutomaticCodexMaintenanceIfEnabled();
+  await runDailyUploadCleanupIfEnabled();
   state.cleanup.lastDailyDate = clock.dateKey;
   pruneExpiredCleanupPlans();
   await saveState(config.stateFile, state);
+}
+
+async function runDailyUploadCleanupIfEnabled() {
+  if (!shouldRunUploadCleanup({
+    cleanupEnabled: runtimeValue("cleanupEnabled"),
+    uploadCleanupEnabled: config.uploadCleanupEnabled
+  })) return;
+  const plan = await createUploadCleanupPlan({ dryRun: true });
+  await appendCleanupLog({
+    type: "upload_cleanup_plan",
+    dryRun: true,
+    candidates: plan.candidates.length,
+    candidateBytes: plan.candidateBytes,
+    totalBytes: plan.totalBytes,
+    at: plan.generatedAt
+  });
 }
 
 async function runAutomaticCodexMaintenanceIfEnabled() {
@@ -2496,6 +2529,14 @@ function pruneExpiredCleanupPlans() {
 async function appendCleanupLog(entry) {
   await fs.mkdir(path.dirname(config.cleanupLogFile), { recursive: true });
   await fs.appendFile(config.cleanupLogFile, `${JSON.stringify(entry)}\n`, "utf8");
+}
+
+async function createUploadCleanupPlan(options = {}) {
+  return buildUploadCleanupPlanFromDisk(config.uploadDir, {
+    retentionDays: config.uploadRetentionDays,
+    maxBytes: config.uploadMaxBytes,
+    dryRun: options.dryRun !== false
+  });
 }
 
 function startStateSnapshotScheduler() {
@@ -4627,12 +4668,13 @@ async function formatDoctorHtml(chatKey) {
 
 async function formatHealthHtml() {
   const memory = process.memoryUsage();
-  const [stateCheck, backupCheck, workdirDisk, stateDisk, serviceStatus] = await Promise.all([
+  const [stateCheck, backupCheck, workdirDisk, stateDisk, serviceStatus, uploadPlan] = await Promise.all([
     checkStateReadWrite(),
     checkDirectoryWritable(config.backupDir),
     getDiskSummary(config.codexWorkdir),
     getDiskSummary(path.dirname(config.stateFile)),
-    readCommandOutput("systemctl", ["--user", "is-active", "codex-telegram-bot.service"], 3000)
+    readCommandOutput("systemctl", ["--user", "is-active", "codex-telegram-bot.service"], 3000),
+    createUploadCleanupPlan({ dryRun: true }).catch(() => null)
   ]);
   return formatKeyValueHtml("Bot health:", [
     ["service", serviceStatus.ok ? serviceStatus.output : "unknown"],
@@ -4649,11 +4691,39 @@ async function formatHealthHtml() {
     ["backup dir write", backupCheck],
     ["workdir disk", workdirDisk],
     ["state disk", stateDisk],
+    ["uploads", uploadPlan ? `${cleanupCount(uploadPlan.candidates.length + uploadPlan.preserved.length)} / ${formatBytes(uploadPlan.totalBytes)}; cleanup ${cleanupCount(uploadPlan.candidates.length)} / ${formatBytes(uploadPlan.candidateBytes)}` : "unavailable"],
     ["pending turns", countPendingTurns()],
     ["backup dir", config.backupDir],
     ["time zone", uiTimeZone()],
     ["locale", uiLocale()],
     ["snapshots", runtimeValue("snapshotEnabled") ? `on, ${runtimeValue("snapshotNotifyTime")} ${uiTimeZone()}, ${runtimeValue("snapshotRetentionDays")}d retention` : "off"]
+  ]);
+}
+
+function formatUploadCleanupPlanHtml(plan) {
+  const lines = [
+    b("Upload cleanup plan"),
+    `mode: ${code(plan.dryRun ? "dry-run" : "confirm")}`,
+    `upload dir: ${code(config.uploadDir)}`,
+    `retention: ${code(`${plan.retentionDays}d`)}`,
+    `max bytes: ${code(plan.maxBytes > 0 ? formatBytes(plan.maxBytes) : "off")}`,
+    `total uploads: ${code(`${cleanupCount(plan.candidates.length + plan.preserved.length)} / ${formatBytes(plan.totalBytes)}`)}`,
+    `cleanup candidates: ${code(`${cleanupCount(plan.candidates.length)} / ${formatBytes(plan.candidateBytes)}`)}`,
+    `No files are deleted until ${code("/cleanup_uploads_confirm")}.`
+  ];
+  for (const candidate of plan.candidates.slice(0, 8)) {
+    lines.push(`- ${code(path.basename(candidate.path))}: ${code(formatBytes(candidate.bytes ?? 0))}`);
+  }
+  return lines.join("\n");
+}
+
+function formatUploadCleanupResultHtml(plan, result) {
+  return formatKeyValueHtml("Upload cleanup complete", [
+    ["candidates", plan.candidates.length],
+    ["candidate bytes", formatBytes(plan.candidateBytes)],
+    ["deleted", result.deleted],
+    ["skipped", result.skipped],
+    ["errors", result.errors.length]
   ]);
 }
 
