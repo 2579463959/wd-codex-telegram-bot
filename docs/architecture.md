@@ -18,7 +18,8 @@ Telegram user
 
 ## Main Components
 
-- `src/bot.js`: Telegram handlers, queueing, settings, cleanup, backups,
+- `src/bot.js`: thin executable entrypoint that imports the runtime.
+- `src/runtime.js`: Telegram handlers, queueing, settings, cleanup, backups,
   formatting, and Codex thread orchestration.
 - `src/telegram_commands.js`: registered command detection used to separate
   real Telegram commands from slash-prefixed paths or normal text.

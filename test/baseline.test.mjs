@@ -15,6 +15,11 @@ async function exists(path) {
   }
 }
 
+async function lineCount(path) {
+  const text = await fs.readFile(new URL(`../${path}`, import.meta.url), "utf8");
+  return text.trimEnd().split("\n").length;
+}
+
 test("public package metadata and assets stay intact", async () => {
   const pkg = await readJson("package.json");
   assert.equal(pkg.name, "codex-telegram-bot");
@@ -37,6 +42,18 @@ test("public CI keeps baseline verification commands", async () => {
   const workflow = await fs.readFile(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
   assert.match(workflow, /npm ci/);
   assert.match(workflow, /npm run check/);
+  assert.match(workflow, /npm run lint/);
+  assert.match(workflow, /npm run format:check/);
   assert.match(workflow, /npm test/);
+  assert.match(workflow, /npm audit --audit-level=moderate/);
   assert.match(workflow, /npm run build --if-present/);
+});
+
+test("bot entrypoint stays thin and runtime stays packaged", async () => {
+  const bot = await fs.readFile(new URL("../src/bot.js", import.meta.url), "utf8");
+  const pkg = await readJson("package.json");
+  assert.equal(bot.trim(), 'import "./runtime.js";');
+  assert.ok(await exists("src/runtime.js"));
+  assert.ok(await lineCount("src/bot.js") <= 10);
+  assert.ok(pkg.files.includes("src"));
 });
