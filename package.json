@@ -44,6 +44,8 @@
   "scripts": {
     "start": "node src/bot.js",
     "check": "node --check src/*.js && node --check scripts/*.mjs && node --check test/*.mjs && npm run validate:locales",
+    "lint": "eslint \"src/**/*.js\" \"scripts/**/*.mjs\" \"test/**/*.mjs\" eslint.config.js",
+    "format:check": "prettier --check package.json package-lock.json .github/workflows/*.yml",
     "validate:locales": "node scripts/validate-locales.mjs",
     "test": "node --test"
   },
@@ -54,6 +56,8 @@
     "telegraf": "^4.16.3"
   },
   "devDependencies": {
-    "@openai/codex": "0.136.0"
+    "@openai/codex": "0.136.0",
+    "eslint": "9.39.4",
+    "prettier": "3.8.3"
   }
 }
