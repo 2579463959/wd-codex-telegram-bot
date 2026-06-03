@@ -2,6 +2,11 @@
 
 All notable public changes are documented here.
 
+## Unreleased
+
+- Added release and rollback runbooks covering automated gates, startup smoke,
+  Telegram smoke, and rollback preparation.
+
 ## 1.0.5 - 2026-05-21
 
 - Updated `@openai/codex-sdk` and the public development `@openai/codex` CLI

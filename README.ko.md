@@ -149,6 +149,8 @@ Dependabot도 `@openai/codex-sdk`와 `@openai/codex`는 매일, 다른 npm depen
 
 - [아키텍처](docs/architecture.md)
 - [보안 모델](docs/security-model.md)
+- [릴리스 체크리스트](docs/release-checklist.md)
+- [롤백](docs/rollback.md)
 - [스크린샷 가이드](docs/screenshots.md)
 - [번역 가이드](docs/translations.md)
 - [보안 정책](SECURITY.md)

@@ -167,6 +167,8 @@ daily, and other npm dependencies weekly.
 
 - [Architecture](docs/architecture.md)
 - [Security model](docs/security-model.md)
+- [Release checklist](docs/release-checklist.md)
+- [Rollback](docs/rollback.md)
 - [Screenshot guide](docs/screenshots.md)
 - [Translation guide](docs/translations.md)
 - [Security policy](SECURITY.md)
