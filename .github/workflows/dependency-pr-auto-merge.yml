@@ -5,7 +5,6 @@ on:
     workflows:
       - CI
       - Codex PR Review
-      - Codex Dependency Update
     types:
       - completed
 
@@ -22,7 +21,7 @@ jobs:
     steps:
       - name: Merge eligible dependency PRs
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.CODEX_AUTOMATION_TOKEN || github.token }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -60,6 +59,18 @@ jobs:
               echo "Skipping PR #$number: unsupported head '$head_ref'."
               continue
             fi
+
+            for attempt in 1 2 3 4 5 6; do
+              merge_state="$(printf '%s' "$pr_json" | jq -r '.mergeStateStatus')"
+              if [ "$merge_state" != "UNKNOWN" ]; then
+                break
+              fi
+              echo "PR #$number merge state is UNKNOWN; waiting for GitHub to recalculate ($attempt/6)."
+              sleep 10
+              pr_json="$(gh pr view "$number" \
+                --repo "$REPO" \
+                --json number,title,headRefName,mergeStateStatus,statusCheckRollup,files)"
+            done
 
             if [ "$merge_state" != "CLEAN" ]; then
               echo "Skipping PR #$number: merge state is '$merge_state'."
