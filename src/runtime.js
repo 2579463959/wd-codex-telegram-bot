@@ -35,6 +35,7 @@ import { b, code, escapeHtml, pre, stripHtml } from "./telegram/html.js";
 import { formatCodexAnswerMarkdownHtml, formatCodexAnswerSafeHtml } from "./telegram/markdown.js";
 import { splitMarkdownAware, splitText } from "./telegram/split.js";
 import { isRegisteredTelegramCommandText } from "./telegram_commands.js";
+import { formatCodexUsageSummary } from "./status_usage.js";
 import {
   buildUploadCleanupPlanFromDisk,
   confirmUploadCleanupPlan,
@@ -2635,7 +2636,12 @@ async function readLatestTokenCount(threadId) {
     if (!line.trim()) continue;
     try {
       const parsed = JSON.parse(line);
-      if (parsed?.payload?.type === "token_count") latest = parsed.payload;
+      if (parsed?.payload?.type === "token_count") {
+        latest = {
+          tokenCount: parsed.payload,
+          sampledAt: parsed.timestamp || parsed.time || parsed.created_at || ""
+        };
+      }
     } catch {
       // Ignore partial or non-JSON session lines.
     }
@@ -2644,63 +2650,14 @@ async function readLatestTokenCount(threadId) {
 }
 
 async function buildCodexUsageSummary(threadId) {
-  const tokenCount = await readLatestTokenCount(threadId);
-  if (!tokenCount) return "";
-  const lines = [];
-  const info = tokenCount.info;
-  const usage = info?.total_token_usage;
-  const window = info?.model_context_window;
-  const used = usage?.total_tokens ?? usage?.input_tokens;
-  if (typeof used === "number" && typeof window === "number" && window > 0) {
-    const left = Math.max(0, Math.round((1 - used / window) * 100));
-    lines.push(`Context: ${left}% left (${formatCompactNumber(used)} used / ${formatCompactNumber(window)})`);
-  }
-
-  const primary = tokenCount.rate_limits?.primary;
-  if (primary) lines.push(`5h limit: ${formatLimitLeft(primary)}`);
-  const secondary = tokenCount.rate_limits?.secondary;
-  if (secondary) lines.push(`Weekly limit: ${formatLimitLeft(secondary)}`);
-  return lines.length > 0 ? ["Codex usage:", ...lines].join("\n") : "";
-}
-
-function formatLimitLeft(limit) {
-  const usedPercent = typeof limit.used_percent === "number" ? limit.used_percent : null;
-  const left = usedPercent == null ? "unknown" : `${Math.max(0, Math.round(100 - usedPercent))}% left`;
-  const reset = typeof limit.resets_at === "number" ? `, resets ${formatResetTime(limit.resets_at)} (${formatDurationUntil(limit.resets_at)} left)` : "";
-  return `${left}${reset}`;
-}
-
-function formatResetTime(epochSeconds) {
-  const date = new Date(epochSeconds * 1000);
-  return new Intl.DateTimeFormat(uiLocale(), {
-    timeZone: uiTimeZone(),
-    day: "2-digit",
-    month: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-    timeZoneName: "short"
-  }).format(date).replace(",", "");
-}
-
-function formatDurationUntil(epochSeconds) {
-  const ms = Math.max(0, epochSeconds * 1000 - Date.now());
-  let minutes = Math.ceil(ms / 60000);
-  const days = Math.floor(minutes / 1440);
-  minutes -= days * 1440;
-  const hours = Math.floor(minutes / 60);
-  minutes -= hours * 60;
-  const parts = [];
-  if (days > 0) parts.push(`${days}d`);
-  if (hours > 0 || days > 0) parts.push(`${hours}h`);
-  parts.push(`${minutes}m`);
-  return parts.join(" ");
-}
-
-function formatCompactNumber(value) {
-  if (value >= 1_000_000) return `${Math.round(value / 100_000) / 10}M`;
-  if (value >= 1_000) return `${Math.round(value / 100) / 10}K`;
-  return String(value);
+  const latest = await readLatestTokenCount(threadId);
+  return formatCodexUsageSummary({
+    tokenCount: latest?.tokenCount,
+    sampledAt: latest?.sampledAt,
+    now: new Date(),
+    locale: uiLocale(),
+    timeZone: uiTimeZone()
+  });
 }
 
 function readFirstLine(file) {
@@ -4325,6 +4282,7 @@ async function buildStatusDetails(chatKey) {
 function formatStatusHtml(chatKey, details) {
   const lines = [
     b("Codex Telegram Bot"),
+    `Checked: ${code(formatDateTime(new Date()))}`,
     `Thread: ${code(details.threadId || "not started")}`,
     `Active turn: ${code(details.active ? "yes" : "no")}`,
     `Side turns: ${code(details.sideTurns ?? getSideTurnCount(chatKey))}`,
@@ -4756,9 +4714,8 @@ async function editOrReplyHtml(ctx, html, extra = {}) {
     return await ctx.editMessageText(html, { parse_mode: "HTML", ...extra });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (!message.includes("message is not modified")) {
-      console.warn("Telegram HTML edit failed:", message);
-    }
+    if (message.includes("message is not modified")) return undefined;
+    console.warn("Telegram HTML edit failed:", message);
   }
   try {
     return await ctx.editMessageText(stripHtml(html), extra);
