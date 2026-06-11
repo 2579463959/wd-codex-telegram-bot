@@ -4,9 +4,18 @@ All notable public changes are documented here.
 
 ## Unreleased
 
+## 1.0.9 - 2026-06-11
+
+- Improved `/status` usage reporting with explicit sample age and stale
+  reset-passed limit handling, so old quota percentages are not shown as
+  current values.
+- Added an explicit `Refresh usage` status-panel button that runs a tiny
+  separate Codex probe turn, after confirmation, to fetch a fresher usage
+  sample without polluting the current chat thread.
 - Added authless deterministic CI diagnosis for failed GitHub Actions runs, including failed job/step summaries, log-tail pattern classification, safe redaction, PR comments, and diagnosis artifacts.
 - Kept Codex AI CI diagnosis optional: `CODEX_ACCESS_TOKEN` only gates the AI add-on, while basic CI diagnosis continues without Codex auth.
 - Added an `actionlint` CI step for GitHub Actions workflow syntax/script checks.
+- Updated development tooling and GitHub Actions dependencies.
 
 ## 1.0.8 - 2026-06-03
 
