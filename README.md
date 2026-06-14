@@ -88,7 +88,7 @@ Edit `.env`:
 - `CODEX_PERSONA_PROMPT`: optional override style instruction prepended to every Codex turn. Leave it empty to use the built-in prompt matching `TELEGRAM_LANGUAGE`.
 - `TELEGRAM_REACTIONS_ENABLED`: enable processing result reactions on inbound messages, default `true`
 - `TELEGRAM_THINKING_REACTION`, `TELEGRAM_COMPLETE_REACTION`, `TELEGRAM_ERROR_REACTION`, `TELEGRAM_STOPPED_REACTION`: reaction emoji for processing states
-- `TELEGRAM_FORMAT_CODEX_ANSWERS`: `markdown` renders a safe Markdown subset with Telegram HTML, `safe` renders only code spans/blocks, `off` sends plain text
+- `TELEGRAM_FORMAT_CODEX_ANSWERS`: `markdown` sends Codex answers through Telegram rich Markdown first and falls back to safe Telegram HTML, `safe` renders only code spans/blocks, `off` sends plain text
 - `TELEGRAM_LANGUAGE`: Telegram menu/panel language and default Codex response language. Any language file in `src/locales/*.json` can be used; default `en`. It can also be changed from `/settings` → `Language`.
 - `TELEGRAM_TIME_ZONE`: IANA time zone for reminders, date keys, and timestamps, default `UTC`; it can also be changed from `/settings` → `Time Zone`
 - `TELEGRAM_LOCALE`: date/time display locale, default `en-US`; it can also be changed from `/settings` → `Locale`
@@ -316,10 +316,12 @@ Bot-owned messages such as `/help`, `/status`, `/options`, `/config`,
 `/threads`, and cleanup prompts are sent with Telegram HTML formatting. Dynamic
 values are escaped centrally before being wrapped in `<code>` or `<pre>`.
 Free-form Codex answers use `TELEGRAM_FORMAT_CODEX_ANSWERS=markdown` by default.
-Markdown is parsed with `markdown-it`, then rendered through a Telegram HTML
-allowlist: bold, italic, strikethrough, links, blockquotes, inline code, and
-fenced code blocks. Raw HTML is escaped, and HTML parse failures fall back to
-plain text so malformed output cannot prevent delivery.
+Markdown mode sends raw answer Markdown through Telegram rich messages first,
+so tables, dividers, headings, lists, bold/italic text, inline code, and fenced
+code blocks can render with native Telegram rich formatting. If rich messages
+are unavailable or rejected, the bot falls back to the existing Telegram HTML
+renderer. Raw HTML is escaped in the fallback path, and HTML parse failures fall
+back to plain text so malformed output cannot prevent delivery.
 
 ## Runtime Overrides
 

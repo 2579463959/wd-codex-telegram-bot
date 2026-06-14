@@ -32,8 +32,9 @@ import {
 } from "./queue.js";
 import { authorizeTelegramUpdate } from "./security.js";
 import { b, code, escapeHtml, pre, stripHtml } from "./telegram/html.js";
+import { replyFormattedCodexAnswer } from "./telegram/codex_answer.js";
 import { formatCodexAnswerMarkdownHtml, formatCodexAnswerSafeHtml } from "./telegram/markdown.js";
-import { splitMarkdownAware, splitText } from "./telegram/split.js";
+import { splitText } from "./telegram/split.js";
 import { isRegisteredTelegramCommandText } from "./telegram_commands.js";
 import { formatCodexUsageSummary } from "./status_usage.js";
 import {
@@ -4790,18 +4791,12 @@ async function replyLong(ctx, text) {
 }
 
 async function replyCodexAnswer(ctx, text) {
-  if (runtimeValue("telegramFormatCodexAnswers") === "off") {
-    await replyLong(ctx, text);
-    return;
-  }
-
-  const max = Math.max(500, runtimeValue("maxTelegramChars"));
-  for (const chunk of splitMarkdownAware(text, max)) {
-    const html = runtimeValue("telegramFormatCodexAnswers") === "markdown"
-      ? formatCodexAnswerMarkdownHtml(chunk)
-      : formatCodexAnswerSafeHtml(chunk);
-    await replyHtml(ctx, html);
-  }
+  await replyFormattedCodexAnswer(ctx, text, {
+    format: runtimeValue("telegramFormatCodexAnswers"),
+    maxTelegramChars: runtimeValue("maxTelegramChars"),
+    replyHtml,
+    replyLong
+  });
 }
 
 async function replyHtml(ctx, html, extra = {}) {

@@ -78,7 +78,7 @@ cp .env.minimal.example .env
 - `CODEX_PERSONA_PROMPT`: 모든 Codex turn 앞에 붙일 선택적 style instruction. 비워두면 `TELEGRAM_LANGUAGE`에 맞는 내장 prompt를 사용합니다.
 - `TELEGRAM_REACTIONS_ENABLED`: inbound 메시지 처리 결과 reaction 사용 여부, 기본값 `true`
 - `TELEGRAM_THINKING_REACTION`, `TELEGRAM_COMPLETE_REACTION`, `TELEGRAM_ERROR_REACTION`, `TELEGRAM_STOPPED_REACTION`: 처리 상태별 reaction emoji
-- `TELEGRAM_FORMAT_CODEX_ANSWERS`: `markdown`은 안전한 Markdown subset을 Telegram HTML로 렌더링하고, `safe`는 code span/block만 렌더링하며, `off`는 plain text로 보냅니다.
+- `TELEGRAM_FORMAT_CODEX_ANSWERS`: `markdown`은 Codex 답변을 Telegram rich Markdown으로 먼저 보내고 실패 시 안전한 Telegram HTML로 fallback하며, `safe`는 code span/block만 렌더링하고, `off`는 plain text로 보냅니다.
 - `TELEGRAM_LANGUAGE`: Telegram 메뉴/panel 언어와 기본 Codex 응답 언어입니다. `src/locales/*.json`에 있는 모든 언어 파일을 사용할 수 있고, 기본값은 `en`입니다. `/settings` -> `Language`에서도 바꿀 수 있습니다.
 - `TELEGRAM_TIME_ZONE`: 알림, 날짜 key, timestamp에 사용할 IANA time zone, 기본값 `UTC`; `/settings` -> `Time Zone`에서도 바꿀 수 있습니다.
 - `TELEGRAM_LOCALE`: 날짜/시간 표시 locale, 기본값 `en-US`; `/settings` -> `Locale`에서도 바꿀 수 있습니다.
@@ -240,7 +240,7 @@ Codex가 inbound Telegram 메시지를 처리하는 동안 같은 chat에 추가
 
 `TELEGRAM_PENDING_TURN_MAX_AGE_SECONDS`보다 오래된 queued item은 자동 만료되고, 봇은 prune할 때 chat에 알립니다. "지금 뭐해?", "진행 상태?", "status" 같은 짧은 상태 질문은 queue에 들어가지 않고 즉시 답변됩니다. `/stop`은 해당 chat의 active turn, side turn, queued message를 중단합니다. Streaming이 켜져 있으면 봇은 file check, command execution, file change 같은 짧은 progress message를 선택한 Telegram 언어로 보냅니다. 이 progress message는 turn 실행 중에는 보이고, final 또는 error response가 전송된 뒤 삭제됩니다. Raw command log나 reasoning text는 stream하지 않습니다. 봇은 각 메시지가 실제로 처리될 때 reaction을 답니다. 기본 흐름은 처리 중 `🤔`, 완료 `👌`, 오류 `😢`, 중단 `😴`입니다. Live progress가 비활성화되어 있으면 긴 turn에는 `TELEGRAM_COMPLETION_NOTICE_SECONDS` 이후 compact completion notice도 전송됩니다.
 
-`/help`, `/status`, `/options`, `/config`, `/threads`, cleanup prompt 같은 bot-owned message는 Telegram HTML formatting으로 전송됩니다. Dynamic value는 `<code>` 또는 `<pre>`로 감싸기 전에 중앙에서 escape됩니다. Free-form Codex answer는 기본적으로 `TELEGRAM_FORMAT_CODEX_ANSWERS=markdown`을 사용합니다. Markdown은 `markdown-it`으로 parse된 뒤 Telegram HTML allowlist를 통해 렌더링됩니다. 허용되는 요소는 bold, italic, strikethrough, link, blockquote, inline code, fenced code block입니다. Raw HTML은 escape되며, HTML parse failure가 발생하면 plain text로 fallback하여 malformed output 때문에 delivery가 막히지 않게 합니다.
+`/help`, `/status`, `/options`, `/config`, `/threads`, cleanup prompt 같은 bot-owned message는 Telegram HTML formatting으로 전송됩니다. Dynamic value는 `<code>` 또는 `<pre>`로 감싸기 전에 중앙에서 escape됩니다. Free-form Codex answer는 기본적으로 `TELEGRAM_FORMAT_CODEX_ANSWERS=markdown`을 사용합니다. Markdown mode는 raw answer Markdown을 Telegram rich message로 먼저 보내므로 table, divider, heading, list, bold/italic, inline code, fenced code block이 Telegram native rich formatting으로 표시될 수 있습니다. Rich message를 사용할 수 없거나 거부되면 기존 Telegram HTML renderer로 fallback합니다. Fallback 경로에서는 raw HTML을 escape하고, HTML parse failure가 발생하면 plain text로 fallback하여 malformed output 때문에 delivery가 막히지 않게 합니다.
 
 ## Runtime Overrides
 
