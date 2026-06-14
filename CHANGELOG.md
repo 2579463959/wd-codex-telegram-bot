@@ -4,6 +4,22 @@ All notable public changes are documented here.
 
 ## Unreleased
 
+## 1.1.0 - 2026-06-14
+
+- Added Telegram rich Markdown delivery for Codex answers via
+  `sendRichMessage`, enabling native rich rendering for tables, dividers,
+  headings, lists, bold/italic text, inline code, and fenced code blocks when
+  `TELEGRAM_FORMAT_CODEX_ANSWERS=markdown`.
+- Preserved the existing `safe` and `off` answer-format modes and kept the
+  Telegram HTML fallback for rich-message rejection or rich length limits.
+- Promoted short standalone inline-code lines into one-line rich preformatted
+  code blocks so Telegram can show compact background code blocks like Hermes.
+- Added focused tests for rich payload preservation, topic/thread routing,
+  fallback classification, long-message fallback, and standalone inline-code
+  promotion.
+- Documented the rich-first Markdown behavior in the English and Korean
+  READMEs.
+
 ## 1.0.9 - 2026-06-11
 
 - Improved `/status` usage reporting with explicit sample age and stale
