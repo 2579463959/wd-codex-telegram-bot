@@ -6,15 +6,56 @@ All notable public changes are documented here.
 
 ## 1.1.2 - 2026-06-15
 
-- Added same-thread Codex auto compact configuration support via dedicated
-  environment variables for model context window, auto compact token limit, tool
-  output token limit, compact strength, and optional compact prompt file.
-- Added a context guard that reads the latest Codex token-count sample and sends
-  a localized Telegram notice when the active thread is near the configured
-  context threshold while continuing in the same thread.
-- Documented the new compact/context settings in the English and Korean READMEs
-  and added focused config and compact-helper tests.
-- Ignored local CodeGraph state with `.codegraph/`.
+### Added
+
+- Added same-thread Codex auto compact configuration support. The bot now maps
+  dedicated environment variables into Codex CLI config overrides passed through
+  `@openai/codex-sdk`, so long-running Telegram conversations can continue in
+  the same Codex thread while Codex performs its native context compaction.
+- Added `CODEX_MODEL_CONTEXT_WINDOW` for optional `model_context_window`
+  overrides. When this is set and `CODEX_AUTO_COMPACT_TOKEN_LIMIT` is not set,
+  the bot derives `model_auto_compact_token_limit` from
+  `CODEX_CONTEXT_COMPACT_THRESHOLD_PERCENT`.
+- Added `CODEX_AUTO_COMPACT_TOKEN_LIMIT` for explicit
+  `model_auto_compact_token_limit` control when the desired token threshold is
+  known.
+- Added `CODEX_TOOL_OUTPUT_TOKEN_LIMIT` to pass Codex
+  `tool_output_token_limit`, reducing pressure from large command, file, and web
+  output in persisted thread context.
+- Added `CODEX_COMPACT_STRENGTH` with `default`, `light`, `balanced`, and
+  `aggressive` modes. The non-default modes select compact prompts that retain
+  the current goal, constraints, decisions, relevant files, commands,
+  verification results, risks, and next steps at different detail levels.
+- Added `CODEX_COMPACT_PROMPT_FILE` to pass Codex
+  `experimental_compact_prompt_file`. When set, the prompt file takes precedence
+  over `CODEX_COMPACT_STRENGTH`.
+- Added a context guard controlled by `CODEX_CONTEXT_GUARD_ENABLED`,
+  `CODEX_CONTEXT_COMPACT_THRESHOLD_PERCENT`, and
+  `CODEX_CONTEXT_MIN_REMAINING_TOKENS`. Before a turn runs, the guard reads the
+  latest Codex `token_count` event from the connected session and sends a
+  localized Telegram notice when the thread is near the configured threshold.
+- Added English and Korean Telegram copy for the context guard notice. The
+  notice reports context usage, remaining tokens, the auto compact limit, and
+  that the bot will continue in the same thread.
+- Added focused compact-helper tests for config mapping, derived compact limits,
+  prompt-file precedence, default prompt behavior, and token-pressure parsing.
+- Added config tests for the new compact/context environment variables and
+  validation of invalid compact strength and percent values.
+
+### Changed
+
+- Updated the SDK constructor configuration summary to show the effective auto
+  compact token limit, compact strength, and context guard thresholds.
+- Updated backup/config summaries so exported state reports the compact and
+  context guard settings without exposing secrets.
+- Documented the new compact/context settings in both the English and Korean
+  READMEs.
+
+### Maintenance
+
+- Ignored local CodeGraph state with `.codegraph/` so generated graph databases
+  are not included in public commits.
+- Updated the package version and public baseline test for `1.1.2`.
 
 ## 1.1.1 - 2026-06-14
 
