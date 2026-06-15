@@ -4,6 +4,93 @@ All notable public changes are documented here.
 
 ## Unreleased
 
+## 1.1.3 - 2026-06-15
+
+### Added
+
+- Added restart recovery for active Codex turns. The bot now records active
+  turn snapshots, planned restart markers, and recovery journal events under
+  the recovery state directory so in-flight work can be resumed after a restart.
+- Added startup recovery planning. Fresh restart markers and active turn
+  snapshots are converted into recovery queue items before Telegram polling
+  starts, and recovery turns resume the saved Codex thread id when one exists.
+- Added planned self-restart support through `/restart`, `/restart_continue`,
+  and `SIGUSR2`. Planned restarts write a recovery marker, wait briefly for
+  active work to drain, and then exit with the configured restart code.
+- Added direct shutdown recovery handling for process stops such as
+  `systemctl --user restart`. The bot writes best-effort recovery markers and
+  preserves persisted snapshots before exiting.
+- Added manual recovery controls: `/recovery_status`, `/recovery_resume`, and
+  `/recovery_cancel`.
+- Added recovery queue metadata for Telegram topics and replies, including
+  message thread ids, origin message ids, origin update ids, and reply targets.
+- Added synthetic Telegram context helpers so persisted queue and recovery
+  items can reply back to the correct chat/topic after process restart.
+- Added recovery prompt guidance that asks Codex to inspect repo state, service
+  state, logs, and tests before resuming a saved task, reducing duplicate or
+  unsafe execution after restart.
+- Added restart recovery configuration options:
+  `BOT_RESTART_RECOVERY_ENABLED`, `BOT_RESTART_EXIT_CODE`,
+  `BOT_RESTART_DRAIN_TIMEOUT_SECONDS`, `BOT_RESTART_DELAY_SECONDS`,
+  `BOT_RECOVERY_DIR`, `BOT_RECOVERY_STALE_SECONDS`,
+  `BOT_RECOVERY_TURN_TTL_SECONDS`, and `BOT_RECOVERY_SUSPEND_AFTER`.
+
+### Changed
+
+- Changed the package `codex-yolo` launcher to prefer the package-local
+  `node_modules/.bin/codex` binary before falling back to a globally installed
+  `codex`, while still respecting `CODEX_REAL_PATH`.
+- Changed planned restart signaling from `SIGUSR1` to `SIGUSR2`, avoiding
+  Node.js inspector activation on `SIGUSR1`.
+- Registered restart and shutdown signal handlers earlier during bootstrap, so
+  recovery state is available even if startup fails before Telegram polling
+  launches.
+- Moved startup recovery scheduling ahead of Telegram bot launch, ensuring
+  saved recovery work is queued before new incoming updates are processed.
+- Queued normal user input behind pending startup recovery work while recovery
+  is active.
+- Applied recovered Codex thread ids to chat state before resuming recovery
+  turns, and cleared mismatched cached thread ids when recovery data indicates a
+  different active thread.
+- Recorded Telegram startup recovery notice delivery and failure events in the
+  recovery journal.
+- Updated `/status` context usage reporting to prefer the last turn's token
+  usage for context-window pressure while still showing cumulative thread usage
+  separately.
+- Kept the public dependency baseline from `origin/main`, including ESLint
+  `10.5.0`.
+
+### Fixed
+
+- Cleared empty and stale restart markers during startup recovery planning.
+- Made direct `SIGTERM` shutdown exit explicitly after marker flush and
+  Telegram stop, preventing a user service restart from waiting until a hard
+  timeout.
+- Made `/recovery_cancel` remove pending recovery queue items in addition to
+  marking recovery state as cancelled.
+- Deduplicated repeated Telegram `/restart` updates by update id.
+- Warned and suspended automatic recovery after repeated failures for the same
+  recovery key, preventing restart recovery loops.
+- Preserved Telegram topic routing for persisted pending queue items and
+  recovery replies.
+- Preserved restart recovery snapshots on `SIGTERM` instead of deleting them
+  before the next process can inspect them.
+
+### Tests
+
+- Added recovery state, journal, startup planning, controller, and shutdown
+  tests.
+- Added restart command tests for disabled recovery, no active turn,
+  pending-queue restart, duplicate Telegram updates, and topic notification
+  metadata.
+- Added bootstrap signal tests for the `SIGUSR2` planned restart path and direct
+  shutdown behavior.
+- Added queue hydration and synthetic Telegram context tests for topic-aware
+  queued/recovery replies.
+- Added package launcher tests for package-local Codex CLI resolution.
+- Added `/status` usage tests for last-turn context pressure versus cumulative
+  thread usage.
+
 ## 1.1.2 - 2026-06-15
 
 ### Added

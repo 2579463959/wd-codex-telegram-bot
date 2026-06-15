@@ -6,6 +6,7 @@ import { botCommandMessage } from "./helpers/fixture.mjs";
 test("registered commands are recognized", () => {
   assert.equal(isRegisteredTelegramCommandText({ text: "/start", entities: [{ type: "bot_command", offset: 0, length: 6 }] }), true);
   assert.equal(isRegisteredTelegramCommandText({ text: "/queue_mode_safe", entities: [{ type: "bot_command", offset: 0, length: 16 }] }), true);
+  assert.equal(isRegisteredTelegramCommandText({ text: "/recovery_status", entities: [{ type: "bot_command", offset: 0, length: 16 }] }), true);
   assert.equal(isRegisteredTelegramCommandText({ text: "/start@my_bot", entities: [{ type: "bot_command", offset: 0, length: 13 }] }), true);
 });
 

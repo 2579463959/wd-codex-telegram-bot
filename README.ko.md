@@ -116,6 +116,14 @@ cp .env.minimal.example .env
 - `CODEX_MAINTENANCE_AUTO_HANDOFF_ENABLED`: daily cleanup scheduler에서 active thread handoff 자동 생성 여부, 기본값 `false`
 - `CODEX_HANDOFF_DIR`: repo-local `docs/codex-handoffs` 경로를 쓸 수 없을 때 사용할 fallback handoff directory, 기본값 `$CODEX_HOME/handoffs`
 - `CODEX_HANDOFF_RECENT_EVENTS`: 생성되는 handoff 문서에 포함할 최근 session highlight 수, 기본값 `40`
+- `BOT_RESTART_RECOVERY_ENABLED`: restart recovery marker, startup recovery, manual recovery control 사용 여부, 기본값 `true`
+- `BOT_RESTART_EXIT_CODE`: planned self-restart에서 사용할 exit code, 기본값 `75`
+- `BOT_RESTART_DRAIN_TIMEOUT_SECONDS`: recovery marker 작성 후 planned restart가 종료되기 전 최대 대기 시간, 기본값 `900`
+- `BOT_RESTART_DELAY_SECONDS`: restart 요청 후 process exit까지 지연 시간, 기본값 `3`
+- `BOT_RECOVERY_DIR`: recovery marker/journal 디렉터리, 기본값 `./state/recovery`
+- `BOT_RECOVERY_STALE_SECONDS`: startup 자동 recovery 후보의 최대 age, 기본값 `21600`
+- `BOT_RECOVERY_TURN_TTL_SECONDS`: recovery queue item TTL, 기본값 `86400`
+- `BOT_RECOVERY_SUSPEND_AFTER`: 같은 recovery key 자동 복구를 suspend할 attempt 수, 기본값 `3`
 - `UPLOAD_DIR`: Codex로 보내기 전에 다운로드한 Telegram 이미지 입력 저장 위치, 기본값 `./state/uploads`
 - `UPLOAD_RETENTION_DAYS`: 이 일수보다 오래된 이미지 upload를 upload cleanup 후보로 표시, 기본값 `7`
 - `UPLOAD_MAX_BYTES`: upload directory 용량 목표이자 파일별 다운로드 상한 byte, 기본값 `1073741824`, `0`이면 용량 목표와 다운로드 상한 비활성화

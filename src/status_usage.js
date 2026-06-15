@@ -9,12 +9,17 @@ export function formatCodexUsageSummary({ tokenCount, sampledAt, sourceLabel = "
   }
 
   const info = tokenCount.info;
-  const usage = info?.total_token_usage;
+  const usage = info?.last_token_usage || info?.usage || info?.total_token_usage;
+  const totalUsage = info?.total_token_usage;
   const window = info?.model_context_window;
-  const used = usage?.total_tokens ?? usage?.input_tokens;
+  const used = usage?.input_tokens ?? usage?.total_tokens;
   if (typeof used === "number" && typeof window === "number" && window > 0) {
     const left = Math.max(0, Math.round((1 - used / window) * 100));
     lines.push(`Context: ${left}% left (${formatCompactNumber(used)} used / ${formatCompactNumber(window)})`);
+  }
+  const total = totalUsage?.total_tokens ?? totalUsage?.input_tokens;
+  if (typeof total === "number" && total !== used) {
+    lines.push(`Total usage: ${formatCompactNumber(total)} this thread`);
   }
 
   const nowMs = toValidDate(now)?.getTime() ?? Date.now();

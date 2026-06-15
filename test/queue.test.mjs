@@ -7,6 +7,7 @@ import {
   moveTurn,
   planIncomingTurn,
   pruneExpiredTurns,
+  removeRecoveryTurns,
   removeTurn
 } from "../src/queue.js";
 
@@ -39,10 +40,28 @@ test("enqueueTurn appends safe turns and prepends interrupt turns with capacity 
   assert.equal(enqueueTurn(queue, turn("c"), { max: 1 }).ok, false);
 });
 
+test("startup recovery gate keeps new user turns behind recovery", () => {
+  const recovery = { ...turn("recovery:rst:chat-1"), kind: "recovery" };
+  const user = { ...turn("user") };
+  const queued = enqueueTurn([recovery], user, { max: 5 });
+  assert.equal(queued.ok, true);
+  assert.deepEqual(queued.queue.map((item) => item.id), ["recovery:rst:chat-1", "user"]);
+  assert.equal(dequeueNextTurn(queued.queue).turn.kind, "recovery");
+});
+
 test("removeTurn supports 1-based number and id selectors", () => {
   assert.deepEqual(removeTurn([turn("a"), turn("b")], "2"), { changed: 1, queue: [turn("a")] });
   assert.deepEqual(removeTurn([turn("a"), turn("b")], "a").queue.map((item) => item.id), ["b"]);
   assert.equal(removeTurn([turn("a")], "missing").changed, 0);
+});
+
+test("removeRecoveryTurns clears recovery queue items only", () => {
+  const recovery = { ...turn("recovery"), kind: "recovery" };
+  const user = { ...turn("user"), kind: "user" };
+  const result = removeRecoveryTurns([recovery, user]);
+  assert.equal(result.changed, 1);
+  assert.deepEqual(result.queue, [user]);
+  assert.deepEqual(removeRecoveryTurns([user]), { changed: 0, queue: [user] });
 });
 
 test("moveTurn supports up and next actions", () => {
@@ -74,6 +93,16 @@ test("hydratePendingQueues normalizes persisted queue state", () => {
   const hydrated = hydratePendingQueues({
     "chat-1": [
       { inputText: "saved", imagePaths: ["a.png", 123], enqueuedAt: "bad-date" },
+      {
+        inputText: "topic",
+        imagePaths: [],
+        messageThreadId: "300",
+        replyToMessageId: 20,
+        originMessageId: 10,
+        originUpdateId: 99,
+        kind: "recovery",
+        recovery: { recoveryKey: "rk" }
+      },
       { inputText: "expired", expiresAt: "2026-06-02T00:00:00.000Z" }
     ],
     ignored: "not-array"
@@ -82,6 +111,12 @@ test("hydratePendingQueues normalizes persisted queue state", () => {
     maxAgeSeconds: 3600,
     createId: () => "generated"
   });
-  assert.deepEqual([...hydrated.pending.entries()].map(([chatKey, queue]) => [chatKey, queue.map((item) => item.id)]), [["chat-1", ["generated"]]]);
+  assert.deepEqual([...hydrated.pending.entries()].map(([chatKey, queue]) => [chatKey, queue.map((item) => item.id)]), [["chat-1", ["generated", "generated"]]]);
   assert.deepEqual(hydrated.queues["chat-1"][0].imagePaths, ["a.png"]);
+  assert.equal(hydrated.queues["chat-1"][1].messageThreadId, 300);
+  assert.equal(hydrated.queues["chat-1"][1].replyToMessageId, 20);
+  assert.equal(hydrated.queues["chat-1"][1].originMessageId, 10);
+  assert.equal(hydrated.queues["chat-1"][1].originUpdateId, 99);
+  assert.equal(hydrated.queues["chat-1"][1].kind, "recovery");
+  assert.deepEqual(hydrated.queues["chat-1"][1].recovery, { recoveryKey: "rk" });
 });

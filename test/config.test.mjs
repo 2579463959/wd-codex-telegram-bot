@@ -28,10 +28,39 @@ test("readConfig applies stable defaults from env and options", () => {
   assert.equal(config.telegramPendingTurnsMax, 10);
   assert.equal(config.telegramPendingTurnMaxAgeSeconds, 7200);
   assert.equal(config.codexSkipGitRepoCheck, false);
+  assert.equal(config.botRestartRecoveryEnabled, true);
+  assert.equal(config.botRestartExitCode, 75);
+  assert.equal(config.botRestartDrainTimeoutSeconds, 900);
+  assert.equal(config.botRestartDelaySeconds, 3);
+  assert.equal(config.botRecoveryDir, "/app/state/recovery");
+  assert.equal(config.botRecoveryStaleSeconds, 21600);
+  assert.equal(config.botRecoveryTurnTtlSeconds, 86400);
+  assert.equal(config.botRecoverySuspendAfter, 3);
   assert.equal(config.uploadRetentionDays, 7);
   assert.equal(config.uploadMaxBytes, 1_073_741_824);
   assert.equal(config.uploadCleanupEnabled, true);
   assert.deepEqual([...config.allowedUserIds], ["42"]);
+});
+
+test("readConfig parses restart recovery env values", () => {
+  const config = readTestConfig({
+    BOT_RESTART_RECOVERY_ENABLED: "off",
+    BOT_RESTART_EXIT_CODE: "42",
+    BOT_RESTART_DRAIN_TIMEOUT_SECONDS: "30",
+    BOT_RESTART_DELAY_SECONDS: "1",
+    BOT_RECOVERY_DIR: "/tmp/recovery",
+    BOT_RECOVERY_STALE_SECONDS: "120",
+    BOT_RECOVERY_TURN_TTL_SECONDS: "240",
+    BOT_RECOVERY_SUSPEND_AFTER: "2"
+  });
+  assert.equal(config.botRestartRecoveryEnabled, false);
+  assert.equal(config.botRestartExitCode, 42);
+  assert.equal(config.botRestartDrainTimeoutSeconds, 30);
+  assert.equal(config.botRestartDelaySeconds, 1);
+  assert.equal(config.botRecoveryDir, "/tmp/recovery");
+  assert.equal(config.botRecoveryStaleSeconds, 120);
+  assert.equal(config.botRecoveryTurnTtlSeconds, 240);
+  assert.equal(config.botRecoverySuspendAfter, 2);
 });
 
 test("readConfig parses optional allowed chat and thread ids", () => {

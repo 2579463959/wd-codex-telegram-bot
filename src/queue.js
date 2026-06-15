@@ -43,6 +43,14 @@ export function removeTurn(queue, selector) {
   return { changed: 1, queue: nextQueue };
 }
 
+export function removeRecoveryTurns(queue) {
+  const nextQueue = queue.filter((turn) => turn?.kind !== "recovery");
+  return {
+    changed: queue.length - nextQueue.length,
+    queue: nextQueue
+  };
+}
+
 export function moveTurn(queue, selector, direction) {
   const index = findPendingTurnIndex(queue, selector);
   if (index < 0) return { changed: 0, queue };
@@ -96,6 +104,12 @@ export function normalizePendingTurn(turn, options = {}) {
     id: typeof turn.id === "string" && turn.id ? turn.id : options.createId?.() ?? "",
     chatKey: options.chatKey,
     chatId: turn.chatId ?? options.chatKey,
+    messageThreadId: normalizeOptionalInteger(turn.messageThreadId),
+    replyToMessageId: normalizeOptionalInteger(turn.replyToMessageId),
+    originMessageId: normalizeOptionalInteger(turn.originMessageId),
+    originUpdateId: normalizeOptionalInteger(turn.originUpdateId),
+    kind: typeof turn.kind === "string" && turn.kind ? turn.kind : "user",
+    recovery: turn.recovery && typeof turn.recovery === "object" ? { ...turn.recovery } : undefined,
     text: typeof turn.text === "string" ? turn.text : turn.inputText,
     inputText: turn.inputText,
     imagePaths: Array.isArray(turn.imagePaths) ? turn.imagePaths.filter((entry) => typeof entry === "string") : [],
@@ -109,6 +123,12 @@ export function serializePendingTurn(turn) {
     id: turn.id,
     chatKey: turn.chatKey,
     chatId: turn.chatId,
+    messageThreadId: turn.messageThreadId,
+    replyToMessageId: turn.replyToMessageId,
+    originMessageId: turn.originMessageId,
+    originUpdateId: turn.originUpdateId,
+    kind: turn.kind,
+    recovery: turn.recovery,
     text: turn.text,
     inputText: turn.inputText,
     imagePaths: turn.imagePaths,
@@ -131,4 +151,10 @@ function findPendingTurnIndex(queue, selector) {
     if (index >= 0 && index < queue.length) return index;
   }
   return queue.findIndex((turn) => turn.id === value);
+}
+
+function normalizeOptionalInteger(value) {
+  if (value == null || value === "") return undefined;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) ? parsed : undefined;
 }

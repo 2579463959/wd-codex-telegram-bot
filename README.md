@@ -126,6 +126,14 @@ Edit `.env`:
 - `CODEX_MAINTENANCE_AUTO_HANDOFF_ENABLED`: create active thread handoff docs from the daily cleanup scheduler, default `false`
 - `CODEX_HANDOFF_DIR`: fallback handoff directory when a repo-local `docs/codex-handoffs` path cannot be used, default `$CODEX_HOME/handoffs`
 - `CODEX_HANDOFF_RECENT_EVENTS`: number of recent session highlights included in generated handoff docs, default `40`
+- `BOT_RESTART_RECOVERY_ENABLED`: enable restart recovery marker, startup recovery, and manual recovery controls, default `true`
+- `BOT_RESTART_EXIT_CODE`: exit code used by planned self-restart, default `75`
+- `BOT_RESTART_DRAIN_TIMEOUT_SECONDS`: maximum wait before planned restart exits after writing recovery marker, default `900`
+- `BOT_RESTART_DELAY_SECONDS`: delay between restart request and process exit, default `3`
+- `BOT_RECOVERY_DIR`: recovery marker/journal directory, default `./state/recovery`
+- `BOT_RECOVERY_STALE_SECONDS`: maximum age for automatic startup recovery candidates, default `21600`
+- `BOT_RECOVERY_TURN_TTL_SECONDS`: recovery queue item TTL, default `86400`
+- `BOT_RECOVERY_SUSPEND_AFTER`: suspend automatic recovery after this many attempts for the same key, default `3`
 - `UPLOAD_DIR`: directory for Telegram image inputs downloaded before sending them to Codex, default `./state/uploads`
 - `UPLOAD_RETENTION_DAYS`: image uploads older than this become upload cleanup candidates, default `7`
 - `UPLOAD_MAX_BYTES`: upload directory size target and per-file download cap in bytes, default `1073741824`, `0` disables the size target and download cap

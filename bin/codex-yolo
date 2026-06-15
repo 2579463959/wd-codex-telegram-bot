@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CODEX_REAL_PATH="${CODEX_REAL_PATH:-codex}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+DEFAULT_CODEX_REAL_PATH="$REPO_ROOT/node_modules/.bin/codex"
+if [[ ! -x "$DEFAULT_CODEX_REAL_PATH" ]]; then
+  DEFAULT_CODEX_REAL_PATH="codex"
+fi
+CODEX_REAL_PATH="${CODEX_REAL_PATH:-$DEFAULT_CODEX_REAL_PATH}"
 
 if [[ "${1:-}" == "exec" ]]; then
   shift

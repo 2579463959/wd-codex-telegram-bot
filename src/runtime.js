@@ -2,6 +2,7 @@ import "dotenv/config";
 
 // Importing this module initializes state and starts the Telegram polling loop.
 
+import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { createReadStream } from "node:fs";
 import fs from "node:fs/promises";
@@ -29,16 +30,24 @@ import {
   moveTurn,
   planIncomingTurn,
   pruneExpiredTurns,
+  removeRecoveryTurns,
   removeTurn,
   serializePendingTurn
 } from "./queue.js";
 import { authorizeTelegramUpdate } from "./security.js";
+import {
+  normalizeTelegramId,
+  telegramChatActionExtraFromMeta,
+  telegramReplyExtraFromMeta,
+  telegramSyntheticMessageFromMeta
+} from "./telegram/context.js";
 import { b, code, escapeHtml, pre, stripHtml } from "./telegram/html.js";
 import { replyFormattedCodexAnswer } from "./telegram/codex_answer.js";
 import { formatCodexAnswerMarkdownHtml, formatCodexAnswerSafeHtml } from "./telegram/markdown.js";
 import { splitText } from "./telegram/split.js";
 import { isRegisteredTelegramCommandText } from "./telegram_commands.js";
 import { formatCodexUsageSummary } from "./status_usage.js";
+import { handleRestartCommandCore } from "./restart_command.js";
 import {
   buildUploadCleanupPlanFromDisk,
   confirmUploadCleanupPlan,
@@ -48,6 +57,29 @@ import {
   deleteUploadCandidates,
   shouldRunUploadCleanup
 } from "./uploads.js";
+import { appendRecoveryJournal, summarizeStreamEvent } from "./recovery/journal.js";
+import { createRestartController } from "./recovery/controller.js";
+import { createRestartMarkerFromActiveTurns } from "./recovery/restart.js";
+import { handleDirectShutdownSignal } from "./recovery/shutdown.js";
+import {
+  applyRecoveryThreadToChatState,
+  buildStartupRecoveryPlan,
+  buildStartupRecoveryActions,
+  clearCompletedRecovery,
+  clearEmptyRestartMarker,
+  clearStaleRestartMarker,
+  markRecoveryAttempt
+} from "./recovery/startup.js";
+import {
+  ensureRecoveryDir,
+  isDuplicateRestartUpdate,
+  rememberRestartUpdate,
+  readActiveTurnSnapshots,
+  readRestartMarker,
+  readRecoveryDedupe,
+  removeActiveTurnSnapshot,
+  upsertActiveTurnSnapshot
+} from "./recovery/state.js";
 import { booleanOptionKeyboardRows } from "./ui/keyboards.js";
 import { formatSettingPanelHtml } from "./ui/panels.js";
 
@@ -206,6 +238,18 @@ const pendingTurns = new Map();
 const codexClients = new Map();
 const sideTurns = new Map();
 const usageRefreshes = new Map();
+let startupRecoveryRunning = false;
+const restartController = createRestartController({
+  activeTurns,
+  exitCode: config.botRestartExitCode,
+  drainTimeoutSeconds: config.botRestartDrainTimeoutSeconds,
+  delaySeconds: config.botRestartDelaySeconds,
+  createMarker: (options) => createRestartMarkerFromActiveTurns(config.botRecoveryDir, options),
+  appendEvent: appendRecoveryEvent,
+  sleep,
+  exit: (codeValue) => process.exit(codeValue),
+  logger: console
+});
 
 hydratePendingTurnsFromState();
 
@@ -676,11 +720,35 @@ async function handleStopCommand(ctx) {
   }
   if (active) {
     active.stopRequested = true;
+    await markActiveTurnStopped(chatKey);
     active.abortController?.abort();
   }
   const cleared = await clearPendingTurns(chatKey);
   await replyHtml(ctx, `Stop requested.${cleared > 0 ? ` Cleared queued turns: ${code(cleared)}` : ""}${stoppedSideTurns > 0 ? ` Stopped side turns: ${code(stoppedSideTurns)}` : ""}`);
 }
+
+bot.command("restart", async (ctx) => {
+  await handleRestartCommand(ctx);
+});
+
+bot.command("restart_continue", async (ctx) => {
+  await handleRestartCommand(ctx);
+});
+
+bot.command("recovery_status", async (ctx) => {
+  await replyHtml(ctx, await formatRecoveryStatusHtml());
+});
+
+bot.command("recovery_resume", async (ctx) => {
+  const started = await scheduleStartupRecovery({ force: true, notifyCtx: ctx });
+  await replyHtml(ctx, started ? t("recoveryManualResumeStarted") : t("recoveryNoCandidates"));
+});
+
+bot.command("recovery_cancel", async (ctx) => {
+  await clearCompletedRecovery(config.botRecoveryDir);
+  await clearRecoveryPendingTurns();
+  await replyHtml(ctx, t("recoveryCancelled"));
+});
 
 bot.command("queue", async (ctx) => {
   await handleQueueCommand(ctx);
@@ -988,7 +1056,9 @@ await bootstrapBot({
   registerTelegramCommands,
   startCleanupScheduler,
   startPersistedQueues,
-  startStateSnapshotScheduler
+  startStateSnapshotScheduler,
+  startRecoveryScheduler,
+  handleSignal: handleProcessSignal
 });
 
 async function handleCodexMessage(ctx, text, loadImages) {
@@ -996,6 +1066,10 @@ async function handleCodexMessage(ctx, text, loadImages) {
   await pruneExpiredPendingTurns(chatKey, ctx);
   if (isStatusQuestion(text) && (activeTurns.has(chatKey) || getPendingTurns(chatKey).length > 0)) {
     await replyHtml(ctx, formatStatusHtml(chatKey, await buildStatusDetails(chatKey)));
+    return;
+  }
+  if (restartController.isScheduled() || isRecoveryActive(chatKey)) {
+    await handleSafeQueuedMessage(ctx, chatKey, text, loadImages);
     return;
   }
 
@@ -1153,11 +1227,14 @@ async function prepareCodexTurn(ctx, text, loadImages) {
   const imagePaths = [...replyContext.imagePaths, ...await loadImages()];
   const inputText = applyPersonaPrompt(mergeReplyContext(text, replyContext));
   const enqueuedAt = new Date();
+  const messageMeta = telegramMessageMeta(ctx);
   return {
     id: createQueueItemId(),
     ctx,
     chatKey: getChatKey(ctx),
     chatId: ctx.chat?.id ?? ctx.from?.id,
+    ...messageMeta,
+    kind: "user",
     text,
     inputText,
     imagePaths,
@@ -1189,9 +1266,13 @@ async function processPreparedTurn(chatKey, preparedTurn, active) {
   active.currentQueueItemId = preparedTurn.id || "";
   active.lastProgress = "";
   active.lastProgressAt = "";
+  active.currentPreparedTurn = preparedTurn;
+  active.recoveryEligible = true;
   const liveProgress = createLiveProgressState(active);
   liveProgress.chatKey = chatKey;
   let turnSucceeded = false;
+  await restoreRecoveryThreadForTurn(chatKey, preparedTurn);
+  await recordActiveTurnStarted(chatKey, preparedTurn);
   await reactQuietly(ctx, config.telegramThinkingReaction);
   const typingInterval = setInterval(() => {
     ctx.sendChatAction("typing").catch(() => {});
@@ -1205,6 +1286,7 @@ async function processPreparedTurn(chatKey, preparedTurn, active) {
     await rememberThread(chatKey, thread);
     const response = formatTurn(turn);
     await replyCodexAnswer(ctx, response || "Codex completed without a final message.");
+    await recordActiveTurnCompleted(chatKey, thread.id || getChatState(chatKey).threadId || "");
     turnSucceeded = true;
     finalReaction = config.telegramCompleteReaction;
   } catch (error) {
@@ -1214,6 +1296,7 @@ async function processPreparedTurn(chatKey, preparedTurn, active) {
       await replyHtml(ctx, `${b(t("codexTurnInterruptedTitle"))}\n${t("codexTurnInterruptedDetail")}`);
       active.interruptRequested = false;
     } else {
+      await recordActiveTurnFailed(chatKey, message);
       await replyHtml(ctx, `<b>Codex failed</b>\n${code(message)}`);
     }
   } finally {
@@ -1241,15 +1324,20 @@ async function runCodexTurn(ctx, chatKey, thread, input, signal, workingMessageI
         const chat = getChatState(chatKey);
         chat.threadId = update.threadId;
         await saveState(config.stateFile, state);
+        await recordThreadStarted(chatKey, update.threadId);
       }
     } else if (update.type === "item") {
+      await recordStreamItemEvent(chatKey, event);
       const now = Date.now();
       if (workingMessageId && now - lastProgressAt > runtimeValue("progressEditIntervalMs")) {
         lastProgressAt = now;
         await editMessageQuietly(ctx, workingMessageId, summarizeProgress(codexStreamItems(streamState)));
       }
     } else if (update.type === "error") {
+      await recordActiveTurnFailed(chatKey, update.message);
       throw new Error(update.message);
+    } else if (update.type === "turn_completed") {
+      await appendRecoveryEvent({ type: "turn_completed", chatKey });
     }
     await maybeSendLiveProgress(ctx, progressState, event, codexStreamItems(streamState));
   }
@@ -1314,6 +1402,137 @@ async function maybeNotifyContextPressure(ctx, chatKey, thread) {
     [t("contextAutoCompact"), autoLimit > 0 ? autoLimit : t("contextAutoCompactDefault")],
     [t("contextAction"), t("contextCompactContinueAction")]
   ]));
+}
+
+async function recordActiveTurnStarted(chatKey, turn) {
+  if (!config.botRestartRecoveryEnabled) return;
+  const snapshot = {
+    chatKey,
+    chatId: turn.chatId ?? chatKey,
+    messageThreadId: turn.messageThreadId,
+    replyToMessageId: turn.replyToMessageId,
+    originMessageId: turn.originMessageId,
+    originUpdateId: turn.originUpdateId,
+    queueItemId: turn.id || "",
+    threadId: getChatState(chatKey).threadId || "",
+    inputTextDigest: digestText(turn.inputText || turn.text || ""),
+    inputPreview: truncate(String(turn.text || turn.inputText || "").replace(/\s+/g, " "), 240),
+    workingDirectory: getEffectiveOptions(chatKey).workingDirectory || config.codexWorkdir,
+    model: getEffectiveOptions(chatKey).model || config.codexModel || "",
+    serviceTier: getEffectiveOptions(chatKey).serviceTier || "default",
+    startedAt: new Date().toISOString(),
+    lastEventAt: new Date().toISOString(),
+    lastKnownStatus: "running",
+    recoveryEligible: turn.kind !== "recovery",
+    recoveryReason: turn.kind === "recovery" ? "recovery_turn" : ""
+  };
+  await safeRecoveryWrite(async () => {
+    await upsertActiveTurnSnapshot(config.botRecoveryDir, chatKey, snapshot);
+    await appendRecoveryEvent({ type: "turn_started", chatKey, queueItemId: turn.id || "", recoveryEligible: snapshot.recoveryEligible });
+  });
+}
+
+async function recordThreadStarted(chatKey, threadId) {
+  if (!config.botRestartRecoveryEnabled) return;
+  await safeRecoveryWrite(async () => {
+    await upsertActiveTurnSnapshot(config.botRecoveryDir, chatKey, {
+      threadId,
+      lastEventAt: new Date().toISOString(),
+      lastKnownStatus: "thread_started"
+    });
+    await appendRecoveryEvent({ type: "thread_started", chatKey, threadId });
+  });
+}
+
+async function recordStreamItemEvent(chatKey, event) {
+  if (!config.botRestartRecoveryEnabled) return;
+  const summary = summarizeStreamEvent(event);
+  await safeRecoveryWrite(async () => {
+    await upsertActiveTurnSnapshot(config.botRecoveryDir, chatKey, {
+      lastEventAt: new Date().toISOString(),
+      lastCompletedItemType: event.type === "item.completed" ? summary.itemType : undefined,
+      lastCompletedItemId: event.type === "item.completed" ? summary.itemId : undefined,
+      lastKnownStatus: summary.type
+    });
+    await appendRecoveryEvent({ type: "stream_item", chatKey, ...summary });
+  });
+}
+
+async function restoreRecoveryThreadForTurn(chatKey, turn) {
+  const recoveryThreadId = String(turn?.recovery?.threadId || "").trim();
+  if (!recoveryThreadId) return;
+  const chat = getChatState(chatKey);
+  const changed = applyRecoveryThreadToChatState(chat, turn);
+  const cached = threadCache.get(chatKey);
+  if (cached && cached.id !== recoveryThreadId) threadCache.delete(chatKey);
+  if (!changed) return;
+  await saveState(config.stateFile, state);
+  await appendRecoveryEvent({
+    type: "recovery_thread_restored",
+    chatKey,
+    threadId: recoveryThreadId,
+    recoveryKey: turn.recovery?.recoveryKey || ""
+  });
+}
+
+async function recordActiveTurnCompleted(chatKey, threadId) {
+  if (!config.botRestartRecoveryEnabled) return;
+  await safeRecoveryWrite(async () => {
+    await appendRecoveryEvent({ type: "turn_completed", chatKey, threadId });
+    await removeActiveTurnSnapshot(config.botRecoveryDir, chatKey);
+    const active = activeTurns.get(chatKey);
+    if (active?.currentPreparedTurn?.kind === "recovery") {
+      await markRecoveryAttempt(config.botRecoveryDir, active.currentPreparedTurn.recovery || { chatKey, threadId }, { status: "completed" });
+      await clearCompletedRecovery(config.botRecoveryDir);
+    }
+  });
+}
+
+async function recordActiveTurnFailed(chatKey, message) {
+  if (!config.botRestartRecoveryEnabled) return;
+  await safeRecoveryWrite(async () => {
+    await upsertActiveTurnSnapshot(config.botRecoveryDir, chatKey, {
+      lastEventAt: new Date().toISOString(),
+      lastKnownStatus: "failed",
+      recoveryEligible: false,
+      recoveryReason: message
+    });
+    await appendRecoveryEvent({ type: "turn_failed", chatKey, message: truncate(message, 500) });
+    const active = activeTurns.get(chatKey);
+    if (active?.currentPreparedTurn?.kind === "recovery") {
+      await markRecoveryAttempt(config.botRecoveryDir, active.currentPreparedTurn.recovery || { chatKey }, { status: "failed" });
+    }
+  });
+}
+
+async function markActiveTurnStopped(chatKey) {
+  if (!config.botRestartRecoveryEnabled) return;
+  await safeRecoveryWrite(async () => {
+    await upsertActiveTurnSnapshot(config.botRecoveryDir, chatKey, {
+      lastEventAt: new Date().toISOString(),
+      lastKnownStatus: "stopped",
+      recoveryEligible: false,
+      recoveryReason: "user_stop"
+    });
+    await appendRecoveryEvent({ type: "turn_stopped", chatKey });
+  });
+}
+
+async function appendRecoveryEvent(event) {
+  await appendRecoveryJournal(config.botRecoveryDir, event);
+}
+
+async function safeRecoveryWrite(fn) {
+  try {
+    await ensureRecoveryDir(config.botRecoveryDir);
+    await fn();
+  } catch (error) {
+    console.warn("recovery journal write failed:", error instanceof Error ? error.message : String(error));
+  }
+}
+
+function digestText(text) {
+  return `sha256:${createHash("sha256").update(String(text)).digest("hex")}`;
 }
 
 function getCodexClient(chatKey) {
@@ -1508,6 +1727,19 @@ async function clearPendingTurns(chatKey) {
   return count;
 }
 
+async function clearRecoveryPendingTurns() {
+  let cleared = 0;
+  for (const [chatKey, queue] of [...pendingTurns.entries()]) {
+    const result = removeRecoveryTurns(queue);
+    if (result.changed === 0) continue;
+    cleared += result.changed;
+    if (result.queue.length > 0) pendingTurns.set(chatKey, result.queue);
+    else pendingTurns.delete(chatKey);
+    await persistPendingTurns(chatKey);
+  }
+  return cleared;
+}
+
 async function removePendingTurn(chatKey, selector) {
   const result = removeTurn(getPendingTurns(chatKey), selector);
   if (result.changed === 0) return 0;
@@ -1618,6 +1850,10 @@ function getSideTurnCount(chatKey) {
   return sideTurns.get(chatKey)?.size ?? 0;
 }
 
+function isRecoveryActive(chatKey) {
+  return activeTurns.get(chatKey)?.currentPreparedTurn?.kind === "recovery";
+}
+
 function countSideTurns() {
   let count = 0;
   for (const controllers of sideTurns.values()) count += controllers.size;
@@ -1649,21 +1885,184 @@ function startPersistedQueues() {
   }, 3000);
 }
 
-function createSyntheticCtx(chatKey) {
-  const chatId = Number.isNaN(Number(chatKey)) ? chatKey : Number(chatKey);
+async function startRecoveryScheduler() {
+  if (!config.botRestartRecoveryEnabled) return;
+  await ensureRecoveryDir(config.botRecoveryDir);
+  await scheduleStartupRecovery({ source: "startup" });
+}
+
+async function handleProcessSignal(signal) {
+  if (signal === "SIGUSR2") {
+    await requestRestart({ mode: "sigusr2", requestedBy: "signal", reason: "self_restart" });
+    return;
+  }
+  await handleDirectShutdownSignal({
+    signal,
+    activeTurns,
+    recoveryEnabled: config.botRestartRecoveryEnabled,
+    recoveryDir: config.botRecoveryDir,
+    createMarker: createRestartMarkerFromActiveTurns,
+    hasRecoverySnapshots: hasPersistedRecoverySnapshots,
+    stopBot: (signalName) => bot.stop(signalName),
+    exit: (codeValue) => process.exit(codeValue),
+    logger: console
+  });
+}
+
+async function hasPersistedRecoverySnapshots() {
+  const snapshots = await readActiveTurnSnapshots(config.botRecoveryDir);
+  return Object.values(snapshots.turns ?? {}).some((snapshot) => snapshot?.recoveryEligible !== false);
+}
+
+async function handleRestartCommand(ctx) {
+  await handleRestartCommandCore(ctx, {
+    recoveryEnabled: config.botRestartRecoveryEnabled,
+    recoveryDisabledText: () => t("recoveryDisabled"),
+    isDuplicate: isDuplicateRestartCommandUpdate,
+    requestRestart,
+    rememberUpdate: (updateId) => rememberRestartUpdate(config.botRecoveryDir, updateId),
+    reply: replyHtml,
+    formatScheduled: formatRestartScheduledHtml
+  });
+}
+
+async function isDuplicateRestartCommandUpdate(ctx) {
+  const updateId = ctx.update?.update_id;
+  const dedupe = await readRecoveryDedupe(config.botRecoveryDir);
+  if (!isDuplicateRestartUpdate(dedupe, updateId)) return false;
+  await appendRecoveryEvent({ type: "restart_duplicate_update_ignored", updateId });
+  return true;
+}
+
+async function requestRestart({ mode, requestedBy, reason, notify = null }) {
+  return restartController.requestRestart({
+    mode,
+    requestedBy,
+    reason,
+    notify
+  });
+}
+
+async function scheduleStartupRecovery({ force = false, notifyCtx = null, source = "manual" } = {}) {
+  if (!config.botRestartRecoveryEnabled || startupRecoveryRunning) return false;
+  startupRecoveryRunning = true;
+  let started = 0;
+  try {
+    const plan = await buildStartupRecoveryPlan(config.botRecoveryDir, {
+      maxAgeSeconds: force ? 0 : config.botRecoveryStaleSeconds,
+      suspendAfter: force ? Number.POSITIVE_INFINITY : config.botRecoverySuspendAfter,
+      reason: source === "startup" ? "startup_recovery" : "manual_recovery"
+    });
+    await appendRecoveryEvent({
+      type: "startup_recovery_plan",
+      source,
+      candidates: plan.candidates.length,
+      stale: plan.stale.length,
+      suspended: plan.suspended.length
+    });
+    await notifyRestartMarker(plan.marker);
+    await clearEmptyRestartMarker(config.botRecoveryDir, plan);
+    await clearStaleRestartMarker(config.botRecoveryDir, plan);
+    for (const candidate of plan.stale) {
+      await appendRecoveryEvent({ type: "recovery_skipped_stale", chatKey: candidate.chatKey, recoveryKey: candidate.recoveryKey });
+    }
+    for (const candidate of plan.suspended) {
+      await appendRecoveryEvent({ type: "recovery_skipped_suspended", chatKey: candidate.chatKey, recoveryKey: candidate.recoveryKey, attempt: candidate.attempt });
+    }
+    const actions = buildStartupRecoveryActions(plan, {
+      activeChatKeys: activeTurns.keys(),
+      ttlSeconds: config.botRecoveryTurnTtlSeconds,
+      workingDirectory: config.codexWorkdir
+    });
+    for (const candidate of actions.skippedActive) {
+      await appendRecoveryEvent({ type: "recovery_skipped_active", chatKey: candidate.chatKey, recoveryKey: candidate.recoveryKey });
+    }
+    for (const turn of actions.turns) {
+      const candidate = turn.recovery;
+      await markRecoveryAttempt(config.botRecoveryDir, candidate, { status: "started" });
+      await enqueuePendingTurnFrontForced(turn.chatKey, turn);
+      const firstTurn = await dequeuePendingTurn(turn.chatKey, createSyntheticCtx(turn));
+      if (firstTurn) {
+        await startPreparedTurnQueue(turn.chatKey, firstTurn);
+        started += 1;
+      }
+    }
+    if (notifyCtx && started === 0) await appendRecoveryEvent({ type: "manual_recovery_no_candidates" });
+  } catch (error) {
+    console.warn("startup recovery failed:", error instanceof Error ? error.message : String(error));
+    if (notifyCtx) await replyHtml(notifyCtx, `${b(t("recoveryFailed"))}\n${code(error instanceof Error ? error.message : String(error))}`);
+  } finally {
+    startupRecoveryRunning = false;
+  }
+  return started > 0;
+}
+
+async function enqueuePendingTurnFrontForced(chatKey, preparedTurn) {
+  pendingTurns.set(chatKey, [preparedTurn, ...getPendingTurns(chatKey)]);
+  await persistPendingTurns(chatKey);
+}
+
+async function notifyRestartMarker(marker) {
+  const notify = marker?.notify;
+  if (!notify?.chatId) return;
+  try {
+    const message = await sendHtmlMessage(notify.chatId, formatRestartRecoveredHtml(marker), telegramNotifyExtra(notify));
+    await appendRecoveryEvent({
+      type: "recovery_startup_notice_sent",
+      restartId: marker.restartId || "",
+      chatKey: String(notify.chatId),
+      messageThreadId: notify.messageThreadId || "",
+      messageId: message?.message_id || ""
+    });
+  } catch (error) {
+    await appendRecoveryEvent({
+      type: "recovery_startup_notice_failed",
+      restartId: marker.restartId || "",
+      chatKey: String(notify.chatId),
+      messageThreadId: notify.messageThreadId || "",
+      message: error instanceof Error ? error.message : String(error)
+    });
+    console.warn("restart recovery notification failed:", error instanceof Error ? error.message : String(error));
+  }
+}
+
+function telegramNotifyExtra(meta = {}) {
+  return telegramReplyExtraFromMeta(meta);
+}
+
+function createSyntheticCtx(turnOrChatKey) {
+  const meta = typeof turnOrChatKey === "object" && turnOrChatKey
+    ? turnOrChatKey
+    : { chatKey: String(turnOrChatKey), chatId: turnOrChatKey };
+  const rawChatId = meta.chatId ?? meta.chatKey;
+  const chatId = Number.isNaN(Number(rawChatId)) ? rawChatId : Number(rawChatId);
+  const message = telegramSyntheticMessageFromMeta(meta);
   return {
-    chat: { id: chatId },
+    chat: { id: chatId, type: meta.chatType },
     from: { id: chatId },
+    message,
+    msg: message,
     telegram: bot.telegram,
-    reply: (text, extra = {}) => bot.telegram.sendMessage(chatId, text, extra),
-    sendChatAction: (action) => bot.telegram.sendChatAction(chatId, action)
+    reply: (text, extra = {}) => bot.telegram.sendMessage(chatId, text, telegramReplyExtraFromMeta(meta, extra)),
+    sendChatAction: (action) => bot.telegram.sendChatAction(chatId, action, telegramChatActionExtraFromMeta(meta))
   };
 }
 
 function ensureTurnContext(turn) {
   if (turn.ctx) return turn.ctx;
-  turn.ctx = createSyntheticCtx(String(turn.chatId ?? turn.chatKey));
+  turn.ctx = createSyntheticCtx(turn);
   return turn.ctx;
+}
+
+function telegramMessageMeta(ctx) {
+  const message = ctx.message ?? ctx.msg ?? {};
+  return {
+    chatType: ctx.chat?.type,
+    messageThreadId: normalizeTelegramId(message.message_thread_id),
+    replyToMessageId: normalizeTelegramId(message.reply_to_message?.message_id),
+    originMessageId: normalizeTelegramId(message.message_id),
+    originUpdateId: normalizeTelegramId(ctx.update?.update_id)
+  };
 }
 
 async function buildReplyContext(ctx) {
@@ -2599,6 +2998,14 @@ function buildConfigSummary() {
     telegramLiveProgressDeletePolicy: config.telegramLiveProgressDeletePolicy,
     telegramPendingTurnsMax: runtimeValue("telegramPendingTurnsMax"),
     telegramPendingTurnMaxAgeSeconds: runtimeValue("telegramPendingTurnMaxAgeSeconds"),
+    botRestartRecoveryEnabled: config.botRestartRecoveryEnabled,
+    botRestartExitCode: config.botRestartExitCode,
+    botRestartDrainTimeoutSeconds: config.botRestartDrainTimeoutSeconds,
+    botRestartDelaySeconds: config.botRestartDelaySeconds,
+    botRecoveryDir: config.botRecoveryDir,
+    botRecoveryStaleSeconds: config.botRecoveryStaleSeconds,
+    botRecoveryTurnTtlSeconds: config.botRecoveryTurnTtlSeconds,
+    botRecoverySuspendAfter: config.botRecoverySuspendAfter,
     telegramLanguage: config.telegramLanguage,
     telegramTimeZone: config.telegramTimeZone,
     telegramLocale: config.telegramLocale,
@@ -4172,6 +4579,8 @@ function formatConfigHtml() {
     ["auto compact token limit", resolveAutoCompactTokenLimit(config) || "default"],
     ["compact strength", config.codexCompactStrength],
     ["context guard", config.codexContextGuardEnabled ? `${config.codexContextCompactThresholdPercent}% / min ${config.codexContextMinRemainingTokens} tokens` : "off"],
+    ["restart recovery", config.botRestartRecoveryEnabled ? `on, delay ${config.botRestartDelaySeconds}s, drain ${config.botRestartDrainTimeoutSeconds}s` : "off"],
+    ["recovery dir", config.botRecoveryDir],
     ["env", config.codexEnv ? "set" : "inherit process.env"],
     ["modelsCacheFile", config.codexModelsCacheFile]
   ]);
@@ -4434,6 +4843,45 @@ function formatStatusHtml(chatKey, details) {
   return lines.join("\n");
 }
 
+async function formatRecoveryStatusHtml() {
+  const [active, marker, dedupe] = await Promise.all([
+    readActiveTurnSnapshots(config.botRecoveryDir),
+    readRestartMarker(config.botRecoveryDir),
+    readRecoveryDedupe(config.botRecoveryDir)
+  ]);
+  const activeSnapshots = Object.values(active.turns ?? {});
+  const dedupeEntries = Object.entries(dedupe.recentRecoveryKeys ?? {});
+  return formatKeyValueHtml(t("recoveryStatusTitle"), [
+    ["enabled", config.botRestartRecoveryEnabled ? "yes" : "no"],
+    ["active snapshots", activeSnapshots.length],
+    ["restart marker", marker?.restartId || "none"],
+    ["marker mode", marker?.mode || "none"],
+    ["marker recoveries", marker?.recoveries?.length ?? 0],
+    ["stale seconds", config.botRecoveryStaleSeconds],
+    ["suspend after", config.botRecoverySuspendAfter],
+    ["recent recovery keys", dedupeEntries.length],
+    ["last active", activeSnapshots.at(-1)?.chatKey || "none"]
+  ]);
+}
+
+function formatRestartScheduledHtml(marker) {
+  return formatKeyValueHtml(t("restartScheduledTitle"), [
+    ["restart id", marker.restartId],
+    ["active recoveries", marker.recoveries.length],
+    ["delay", `${config.botRestartDelaySeconds}s`],
+    ["drain timeout", `${config.botRestartDrainTimeoutSeconds}s`],
+    ["exit code", marker.exitCode]
+  ]);
+}
+
+function formatRestartRecoveredHtml(marker) {
+  return formatKeyValueHtml(t("recoveryStartupNoticeTitle"), [
+    ["restart id", marker.restartId],
+    ["recoveries", marker.recoveries?.length ?? 0],
+    ["mode", marker.mode || "unknown"]
+  ]);
+}
+
 function formatQueueHtml(chatKey) {
   const queue = getPendingTurns(chatKey);
   if (queue.length === 0) {
@@ -4460,7 +4908,8 @@ function formatQueueHtml(chatKey) {
   for (const [index, turn] of queue.entries()) {
     const imageSuffix = turn.imagePaths.length > 0 ? `, images:${turn.imagePaths.length}` : "";
     const expires = runtimeValue("telegramPendingTurnMaxAgeSeconds") <= 0 ? "no expiry" : `expires ${formatDateTime(turn.expiresAt)}`;
-    lines.push(`${index + 1}. ${code(truncate(turn.text.replace(/\s+/g, " "), 120))} (${code(turn.id)}, ${code(formatDateTime(turn.enqueuedAt))}, ${code(expires)}${imageSuffix})`);
+    const kindPrefix = turn.kind === "recovery" ? "[recovery] " : "";
+    lines.push(`${index + 1}. ${code(`${kindPrefix}${truncate(turn.text.replace(/\s+/g, " "), 120)}`)} (${code(turn.id)}, ${code(formatDateTime(turn.enqueuedAt))}, ${code(expires)}${imageSuffix})`);
   }
   lines.push("", t("queueButtonsHelp"));
   return lines.join("\n");
