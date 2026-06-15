@@ -4,6 +4,18 @@ All notable public changes are documented here.
 
 ## Unreleased
 
+## 1.1.2 - 2026-06-15
+
+- Added same-thread Codex auto compact configuration support via dedicated
+  environment variables for model context window, auto compact token limit, tool
+  output token limit, compact strength, and optional compact prompt file.
+- Added a context guard that reads the latest Codex token-count sample and sends
+  a localized Telegram notice when the active thread is near the configured
+  context threshold while continuing in the same thread.
+- Documented the new compact/context settings in the English and Korean READMEs
+  and added focused config and compact-helper tests.
+- Ignored local CodeGraph state with `.codegraph/`.
+
 ## 1.1.1 - 2026-06-14
 
 - Added persistent language-specific Telegram rich Markdown style instructions
