@@ -2,6 +2,53 @@
 
 All notable public changes are documented here.
 
+## 1.1.5 - 2026-06-16
+
+### Changed
+
+- Hardened Telegram rich Markdown fallback rendering for Codex answers. When
+  `sendRichMessage` is unavailable or rejected by Telegram, the HTML fallback
+  now renders Markdown tables in readable mobile-safe forms instead of joining
+  table cells together.
+- Changed two-column Markdown table fallback output to bullet-style key/value
+  blocks. This preserves the relationship between a row label and its value on
+  narrow Telegram clients, avoiding collapsed output such as
+  `문구실제 기능Spawn...`.
+- Changed wider Markdown table fallback output to preformatted text tables so
+  three-or-more-column comparisons remain aligned and scannable in Telegram
+  clients that only receive the regular HTML fallback.
+- Adjusted the persistent Codex answer style prompt to recommend Markdown
+  tables only when they are compact and likely to fit on mobile. Longer
+  explanatory comparisons now prefer bullets or short key/value sections.
+
+### Fixed
+
+- Fixed Markdown table collapse in the regular Telegram HTML fallback renderer.
+  `markdown-it` table tokens are now handled explicitly instead of allowing
+  inline table cell text to flow together with no separators.
+- Preserved fenced code blocks that contain pipe-table-looking text. Tables
+  inside code fences continue to render as code blocks rather than being
+  transformed into fallback table output.
+- Added safe observability for rich message rejection. Rich fallback decisions
+  now include an error summary and warning log metadata without logging the full
+  raw Markdown answer body.
+
+### Maintenance
+
+- Removed the empty `Unreleased` changelog heading left after the `1.1.4`
+  release.
+
+### Tests
+
+- Added fallback renderer regression tests for two-column tables, wider tables,
+  and pipe-table text inside fenced code blocks.
+- Added rich message tests covering rejection summaries, safe warning logging,
+  and readable HTML fallback output after rich rejection.
+- Added prompt tests for the new mobile-safe table guidance.
+- Verified the release with `npm run verify`, including syntax checks, locale
+  validation, ESLint, Prettier package/workflow checks, the full Node test
+  suite, and `npm audit --audit-level=moderate`.
+
 ## 1.1.4 - 2026-06-16
 
 ### Added
