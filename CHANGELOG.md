@@ -2,8 +2,6 @@
 
 All notable public changes are documented here.
 
-## Unreleased
-
 ## 1.1.4 - 2026-06-16
 
 ### Added
