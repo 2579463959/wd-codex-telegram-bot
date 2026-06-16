@@ -4,6 +4,18 @@ All notable public changes are documented here.
 
 ## Unreleased
 
+### Added
+
+- Added local image artifact delivery for Codex answers. Standalone
+  `[[telegram_photo:/absolute/path|caption=...]]` directives and standalone
+  Markdown local image lines are stripped from the text answer, validated
+  against allowed roots and image extensions, and sent to Telegram with
+  `replyWithPhoto` in the current chat or forum topic.
+- Added Telegram photo artifact tests covering directive parsing, Markdown
+  image parsing, allowed-root validation, fenced-code exclusion, topic-aware
+  `replyWithPhoto` payloads, photo-only answers, and upload failure fallback
+  text.
+
 ## 1.1.3 - 2026-06-15
 
 ### Added

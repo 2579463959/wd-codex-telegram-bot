@@ -1,34 +1,72 @@
+import { extractTelegramPhotoArtifacts, formatRejectedPhotoArtifacts } from "./attachments.js";
 import { formatCodexAnswerMarkdownHtml, formatCodexAnswerSafeHtml } from "./markdown.js";
+import { replyTelegramPhotos } from "./photo.js";
 import { tryReplyRichMarkdown } from "./rich.js";
 import { splitMarkdownAware } from "./split.js";
 
 export async function replyFormattedCodexAnswer(ctx, text, options = {}) {
   const {
+    extractPhotoArtifacts = extractTelegramPhotoArtifacts,
     format = "markdown",
     maxTelegramChars = 3500,
     replyHtml,
     replyLong,
+    replyPhotos = replyTelegramPhotos,
     tryRichMarkdown = tryReplyRichMarkdown
   } = options;
 
   if (typeof replyHtml !== "function") throw new TypeError("replyHtml option is required.");
   if (typeof replyLong !== "function") throw new TypeError("replyLong option is required.");
 
+  let answerText = String(text ?? "");
+  const artifactResult = await extractPhotoArtifacts(answerText);
+  answerText = appendRejectedPhotoArtifacts(artifactResult.text, artifactResult.rejected);
+
   if (format === "off") {
-    await replyLong(ctx, text);
+    if (answerText) await replyLong(ctx, answerText);
+    await replyPhotosWithFallback(ctx, artifactResult.photos, replyPhotos, replyHtml);
     return;
   }
 
   if (format === "markdown") {
-    const richResult = await tryRichMarkdown(ctx, text);
-    if (richResult.sent) return;
+    const richResult = answerText
+      ? await tryRichMarkdown(ctx, answerText)
+      : { sent: false };
+    if (richResult.sent) {
+      await replyPhotosWithFallback(ctx, artifactResult.photos, replyPhotos, replyHtml);
+      return;
+    }
   }
 
   const max = Math.max(500, maxTelegramChars);
-  for (const chunk of splitMarkdownAware(text, max)) {
-    const html = format === "markdown"
-      ? formatCodexAnswerMarkdownHtml(chunk)
-      : formatCodexAnswerSafeHtml(chunk);
-    await replyHtml(ctx, html);
+  if (answerText) {
+    for (const chunk of splitMarkdownAware(answerText, max)) {
+      const html = format === "markdown"
+        ? formatCodexAnswerMarkdownHtml(chunk)
+        : formatCodexAnswerSafeHtml(chunk);
+      await replyHtml(ctx, html);
+    }
   }
+  await replyPhotosWithFallback(ctx, artifactResult.photos, replyPhotos, replyHtml);
+}
+
+function appendRejectedPhotoArtifacts(text, rejected) {
+  const rejectionText = formatRejectedPhotoArtifacts(rejected);
+  if (!rejectionText) return String(text ?? "");
+  const body = String(text ?? "").trim();
+  return body ? `${body}\n\n${rejectionText}` : rejectionText;
+}
+
+async function replyPhotosWithFallback(ctx, photos, replyPhotos, replyHtml) {
+  await replyPhotos(ctx, photos, {
+    onError: async (photo, error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      const text = [
+        "Photo upload failed. File remains on disk:",
+        `\`${photo.path}\``,
+        `\`${message}\``
+      ].join("\n");
+      await replyHtml(ctx, formatCodexAnswerSafeHtml(text));
+    }
+  });
 }

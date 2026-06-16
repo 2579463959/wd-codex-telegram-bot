@@ -247,3 +247,66 @@ test("long markdown answers exceed rich limit and use existing split fallback", 
   assert.ok(htmlReplies.length > 1);
   assert.ok(htmlReplies.every((html) => html.length <= 3500));
 });
+
+test("formatted markdown answer sends extracted photos after rich text", async () => {
+  const ctx = createCtx();
+  const photosSent = [];
+  await replyFormattedCodexAnswer(ctx, "ignored", {
+    format: "markdown",
+    extractPhotoArtifacts: async () => ({
+      text: "텍스트 답변",
+      photos: [{ path: "/tmp/chart.png", caption: "차트" }],
+      rejected: []
+    }),
+    replyHtml: async () => assert.fail("rich path should handle text"),
+    replyLong: async () => assert.fail("plain long reply should not run"),
+    replyPhotos: async (_ctx, photos) => photosSent.push(...photos)
+  });
+
+  assert.equal(ctx.calls.length, 1);
+  assert.equal(ctx.calls[0].method, "sendRichMessage");
+  assert.deepEqual(photosSent, [{ path: "/tmp/chart.png", caption: "차트" }]);
+});
+
+test("formatted markdown answer can send photo-only artifacts", async () => {
+  const ctx = createCtx();
+  const photosSent = [];
+  await replyFormattedCodexAnswer(ctx, "ignored", {
+    format: "markdown",
+    extractPhotoArtifacts: async () => ({
+      text: "",
+      photos: [{ path: "/tmp/chart.png", caption: "차트" }],
+      rejected: []
+    }),
+    replyHtml: async () => assert.fail("empty text should not send html"),
+    replyLong: async () => assert.fail("plain long reply should not run"),
+    replyPhotos: async (_ctx, photos) => photosSent.push(...photos)
+  });
+
+  assert.equal(ctx.calls.length, 0);
+  assert.deepEqual(photosSent, [{ path: "/tmp/chart.png", caption: "차트" }]);
+});
+
+test("formatted markdown answer reports photo upload failures through html fallback", async () => {
+  const ctx = createCtx();
+  const htmlReplies = [];
+  await replyFormattedCodexAnswer(ctx, "ignored", {
+    format: "markdown",
+    extractPhotoArtifacts: async () => ({
+      text: "",
+      photos: [{ path: "/tmp/chart.png", caption: "차트" }],
+      rejected: []
+    }),
+    replyHtml: async (_ctx, html) => htmlReplies.push(html),
+    replyLong: async () => assert.fail("plain long reply should not run"),
+    replyPhotos: async (_ctx, _photos, options) => {
+      await options.onError({ path: "/tmp/chart.png" }, new Error("upload failed"));
+    }
+  });
+
+  assert.equal(ctx.calls.length, 0);
+  assert.equal(htmlReplies.length, 1);
+  assert.match(htmlReplies[0], /Photo upload failed/);
+  assert.match(htmlReplies[0], /<code>\/tmp\/chart\.png<\/code>/);
+  assert.match(htmlReplies[0], /<code>upload failed<\/code>/);
+});
