@@ -2,6 +2,13 @@
 
 All notable public changes are documented here.
 
+## Unreleased
+
+### Added
+
+- Added Traditional Chinese (`zh-tw`) Telegram UI text and matching default
+  Codex response-style prompts.
+
 ## 1.2.0 - 2026-07-06
 
 ### Added

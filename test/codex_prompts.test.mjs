@@ -34,6 +34,19 @@ test("default style instructions include Korean rich Markdown guidance", () => {
   assert.match(prompt, /긴 설명형 비교는 bullet 또는 짧은 key\/value 섹션을 우선합니다/);
 });
 
+test("default style instructions include Traditional Chinese rich Markdown guidance", () => {
+  const prompt = buildStyleInstructionPrompt({ language: "zh-tw" });
+  assert.match(prompt, /回覆風格指引：/);
+  assert.match(prompt, /Telegram Rich Markdown 格式指引：/);
+  assert.match(prompt, /繁體中文/);
+  assert.match(prompt, /Markdown 表格/);
+  assert.match(prompt, /inline code/);
+  assert.match(prompt, /fenced code block/);
+  assert.match(prompt, /\*\*bold\*\*/);
+  assert.match(prompt, /不要把大量內容壓縮成一個密集段落/);
+  assert.match(prompt, /Telegram 友善的版面/);
+});
+
 test("custom persona prompt is combined with persistent rich Markdown guidance", () => {
   const prompt = buildStyleInstructionPrompt({
     language: "ko",
