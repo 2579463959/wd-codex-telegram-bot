@@ -3,6 +3,8 @@ import path from "node:path";
 import { workerPaths } from "./paths.js";
 
 const STATE_VERSION = 1;
+const fileLocks = new Map();
+let atomicWriteCounter = 0;
 
 export async function ensureWorkerStateDir(paths) {
   await fs.mkdir(paths.stateDir, { recursive: true });
@@ -26,23 +28,25 @@ export function createWorkerStore(config = {}) {
 }
 
 export async function appendJobEvent(paths, jobId, event) {
-  await ensureWorkerStateDir(paths);
-  const job = await readJobState(paths, jobId);
-  const seq = Number(job?.lastSeq || 0) + 1;
-  const payload = {
-    ...event,
-    seq,
-    at: event.at || new Date().toISOString()
-  };
-  await fs.appendFile(jobEventsPath(paths, jobId), `${JSON.stringify(payload)}\n`, "utf8");
-  await writeJobState(paths, {
-    ...(job ?? {}),
-    id: jobId,
-    lastSeq: seq,
-    updatedAt: payload.at,
-    status: event.status || job?.status || statusFromEvent(event.type)
+  return withFileLock(jobPath(paths, jobId), async () => {
+    await ensureWorkerStateDir(paths);
+    const job = await readJobState(paths, jobId);
+    const seq = Number(job?.lastSeq || 0) + 1;
+    const payload = {
+      ...event,
+      seq,
+      at: event.at || new Date().toISOString()
+    };
+    await fs.appendFile(jobEventsPath(paths, jobId), `${JSON.stringify(payload)}\n`, "utf8");
+    await writeJobStateLocked(paths, {
+      ...(job ?? {}),
+      id: jobId,
+      lastSeq: seq,
+      updatedAt: payload.at,
+      status: event.status || job?.status || statusFromEvent(event.type)
+    });
+    return payload;
   });
-  return payload;
 }
 
 export async function readJobEvents(paths, jobId, { afterSeq = 0, limit = 500 } = {}) {
@@ -60,6 +64,10 @@ export async function readJobEvents(paths, jobId, { afterSeq = 0, limit = 500 } 
 }
 
 export async function writeJobState(paths, job) {
+  return withFileLock(jobPath(paths, job.id), () => writeJobStateLocked(paths, job));
+}
+
+async function writeJobStateLocked(paths, job) {
   await ensureWorkerStateDir(paths);
   const existing = await readJobState(paths, job.id);
   await writeJsonFileAtomic(jobPath(paths, job.id), {
@@ -83,22 +91,26 @@ export async function readActiveJobs(paths) {
 }
 
 export async function upsertActiveJob(paths, job) {
-  const payload = await readActiveJobs(paths);
-  payload.jobs[job.id] = {
-    ...payload.jobs[job.id],
-    ...job,
-    updatedAt: new Date().toISOString()
-  };
-  payload.updatedAt = new Date().toISOString();
-  await writeJsonFileAtomic(paths.activeJobs, payload);
-  return payload.jobs[job.id];
+  return withFileLock(paths.activeJobs, async () => {
+    const payload = await readActiveJobs(paths);
+    payload.jobs[job.id] = {
+      ...payload.jobs[job.id],
+      ...job,
+      updatedAt: new Date().toISOString()
+    };
+    payload.updatedAt = new Date().toISOString();
+    await writeJsonFileAtomic(paths.activeJobs, payload);
+    return payload.jobs[job.id];
+  });
 }
 
 export async function removeActiveJob(paths, jobId) {
-  const payload = await readActiveJobs(paths);
-  delete payload.jobs[jobId];
-  payload.updatedAt = new Date().toISOString();
-  await writeJsonFileAtomic(paths.activeJobs, payload);
+  await withFileLock(paths.activeJobs, async () => {
+    const payload = await readActiveJobs(paths);
+    delete payload.jobs[jobId];
+    payload.updatedAt = new Date().toISOString();
+    await writeJsonFileAtomic(paths.activeJobs, payload);
+  });
 }
 
 function jobPath(paths, jobId) {
@@ -138,9 +150,27 @@ async function readJsonFileSafe(filePath, fallback, { quarantineDir = "" } = {})
 
 async function writeJsonFileAtomic(filePath, payload) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
-  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  atomicWriteCounter = (atomicWriteCounter + 1) % Number.MAX_SAFE_INTEGER;
+  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${atomicWriteCounter}.tmp`;
   await fs.writeFile(tmpPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
   await fs.rename(tmpPath, filePath);
+}
+
+async function withFileLock(filePath, fn) {
+  const previous = fileLocks.get(filePath) ?? Promise.resolve();
+  let releaseCurrent;
+  const current = new Promise((resolve) => {
+    releaseCurrent = resolve;
+  });
+  const queued = previous.catch(() => {}).then(() => current);
+  fileLocks.set(filePath, queued);
+  await previous.catch(() => {});
+  try {
+    return await fn();
+  } finally {
+    releaseCurrent();
+    if (fileLocks.get(filePath) === queued) fileLocks.delete(filePath);
+  }
 }
 
 async function quarantineCorruptFile(filePath, quarantineDir) {

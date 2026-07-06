@@ -203,9 +203,13 @@ function mergeCandidates(marker, active, fallbackReason) {
     };
     byIdentity.set(candidateIdentityKey(normalized), normalized);
   }
-  for (const snapshot of Object.values(active?.turns ?? {})) {
-    const candidate = recoveryCandidateFromSnapshot(snapshot, fallbackReason);
-    if (!candidate) continue;
+  for (const [chatKey, snapshot] of Object.entries(active?.turns ?? {})) {
+    const snapshotWithKey = { ...snapshot, chatKey: snapshot?.chatKey || chatKey };
+    const candidate = recoveryCandidateFromSnapshot(snapshotWithKey, fallbackReason);
+    if (!candidate) {
+      if (snapshotWithKey.recoveryEligible === false) byIdentity.delete(candidateIdentityKey(snapshotWithKey));
+      continue;
+    }
     const key = candidateIdentityKey(candidate);
     byIdentity.set(key, { ...candidate, ...byIdentity.get(key) });
   }

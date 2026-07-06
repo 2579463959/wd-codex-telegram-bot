@@ -213,6 +213,41 @@ test("startup recovery actions create recovery turns from restart marker candida
   assert.deepEqual(actions.skippedActive, []);
 });
 
+test("startup plan suppresses restart marker candidates stopped after marker creation", async () => {
+  const dir = await tmpRecoveryDir();
+  await upsertActiveTurnSnapshot(dir, "chat-1", {
+    chatId: 100,
+    threadId: "thread-1",
+    inputPreview: "continue work",
+    recoveryEligible: true,
+    lastEventAt: "2026-06-15T00:00:00.000Z"
+  });
+  await createRestartMarkerFromActiveTurns(dir, {
+    now: new Date("2026-06-15T00:01:00.000Z"),
+    restartId: "rst_test",
+    reason: "self_restart"
+  });
+  await upsertActiveTurnSnapshot(dir, "chat-1", {
+    threadId: "thread-1",
+    recoveryEligible: false,
+    lastKnownStatus: "stopped",
+    recoveryReason: "user_stop",
+    lastEventAt: "2026-06-15T00:02:00.000Z"
+  });
+
+  const plan = await buildStartupRecoveryPlan(dir, {
+    now: new Date("2026-06-15T00:03:00.000Z"),
+    maxAgeSeconds: 3600,
+    reason: "startup_recovery"
+  });
+
+  assert.deepEqual(plan.candidates, []);
+  assert.deepEqual(plan.stale, []);
+  assert.deepEqual(plan.suspended, []);
+  assert.equal(await clearEmptyRestartMarker(dir, plan), true);
+  assert.equal(await readRestartMarker(dir), null);
+});
+
 test("startup recovery actions skip candidates already active", async () => {
   const candidate = {
     chatKey: "chat-1",

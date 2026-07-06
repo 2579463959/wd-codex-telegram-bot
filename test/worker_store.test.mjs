@@ -23,6 +23,24 @@ test("worker store appends job events with monotonic seq", async () => {
   assert.deepEqual((await store.readJobEvents("job-1", { afterSeq: 1 })).map((event) => event.seq), [2]);
 });
 
+test("worker store serializes concurrent event appends", async () => {
+  const { store } = await tempStore();
+  await store.writeJobState({ id: "job-1", status: "running" });
+
+  const events = await Promise.all(Array.from({ length: 20 }, (_, index) => (
+    store.appendJobEvent("job-1", {
+      type: "worker.heartbeat",
+      status: "running",
+      index
+    })
+  )));
+
+  const seqs = events.map((event) => event.seq).sort((a, b) => a - b);
+  assert.deepEqual(seqs, Array.from({ length: 20 }, (_, index) => index + 1));
+  assert.equal((await store.readJobState("job-1")).lastSeq, 20);
+  assert.equal((await store.readJobEvents("job-1", { afterSeq: 0, limit: 50 })).length, 20);
+});
+
 test("worker store persists active jobs", async () => {
   const { store } = await tempStore();
   await store.upsertActiveJob({ id: "job-1", chatKey: "chat-1", status: "running" });

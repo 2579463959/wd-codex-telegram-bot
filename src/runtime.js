@@ -752,11 +752,7 @@ async function handleStopCommand(ctx) {
   if (active) {
     active.stopRequested = true;
     await markActiveTurnStopped(chatKey);
-    if (active.workerJobId) {
-      getWorkerClient().cancelJob(active.workerJobId).catch((error) => {
-        console.warn("worker cancel failed:", error instanceof Error ? error.message : String(error));
-      });
-    }
+    cancelWorkerJobOnce(active, active.workerJobId);
     active.abortController?.abort();
   }
   const cleared = await clearPendingTurns(chatKey);
@@ -1391,11 +1387,7 @@ async function processPreparedTurnViaWorker(ctx, chatKey, preparedTurn, active, 
   active.workerEventSeq = workerDeliveryCursor(chatKey, started.jobId);
   await recordWorkerJobStarted(chatKey, { ...job, id: started.jobId });
 
-  const cancelWorker = () => {
-    client.cancelJob(started.jobId).catch((error) => {
-      console.warn("worker cancel failed:", error instanceof Error ? error.message : String(error));
-    });
-  };
+  const cancelWorker = () => cancelWorkerJobOnce(active, started.jobId);
   if (active.abortController.signal.aborted) cancelWorker();
   else active.abortController.signal.addEventListener("abort", cancelWorker, { once: true });
 
@@ -1448,7 +1440,7 @@ async function waitForWorkerJob(ctx, chatKey, jobId, active, liveProgress, optio
   try {
     while (!terminal) {
       if (active.abortController?.signal?.aborted) {
-        await client.cancelJob(jobId).catch(() => {});
+        cancelWorkerJobOnce(active, jobId);
       }
 
       const response = await client.readJobEvents(jobId, cursor);
@@ -1566,6 +1558,14 @@ function isTerminalWorkerEvent(event) {
 
 function isTerminalWorkerStatus(status) {
   return status === "completed" || status === "failed" || status === "cancelled";
+}
+
+function cancelWorkerJobOnce(active, jobId) {
+  if (!active || !jobId || active.workerCancelRequested) return;
+  active.workerCancelRequested = true;
+  getWorkerClient().cancelJob(jobId).catch((error) => {
+    console.warn("worker cancel failed:", error instanceof Error ? error.message : String(error));
+  });
 }
 
 async function runCodexTurn(ctx, chatKey, thread, input, signal, workingMessageId, liveProgress = null, options = {}) {
@@ -2718,10 +2718,16 @@ async function resumeWorkerJobRecovery(ctx, chatKey, jobId, active, liveProgress
     finalReaction = config.telegramCompleteReaction;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await recordActiveTurnFailed(chatKey, message);
-    await replyHtml(ctx, `${b(t("recoveryStartFailedTitle"))}\n${t("recoveryStartFailedDetail")}\n${code(message)}`).catch(() => {});
-    await appendRecoveryEvent({ type: "worker_recovery_failed", chatKey, jobId, message: truncate(message, 500) });
-    finalReaction = active.abortController.signal.aborted ? config.telegramStoppedReaction : config.telegramErrorReaction;
+    if (active.abortController.signal.aborted || isWorkerCancelledMessage(message)) {
+      await markActiveTurnStopped(chatKey);
+      await appendRecoveryEvent({ type: "worker_recovery_cancelled", chatKey, jobId, message: truncate(message, 500) });
+      finalReaction = config.telegramStoppedReaction;
+    } else {
+      await recordActiveTurnFailed(chatKey, message);
+      await replyHtml(ctx, `${b(t("recoveryStartFailedTitle"))}\n${t("recoveryStartFailedDetail")}\n${code(message)}`).catch(() => {});
+      await appendRecoveryEvent({ type: "worker_recovery_failed", chatKey, jobId, message: truncate(message, 500) });
+      finalReaction = config.telegramErrorReaction;
+    }
   } finally {
     if (shouldDeleteLiveProgress(liveProgress, finalReaction === config.telegramCompleteReaction)) {
       await deleteTrackedProgressMessages(ctx, liveProgress);
@@ -2755,6 +2761,13 @@ function createWorkerRecoveryTurn(chatKey, snapshot) {
       workerEventSeq: Number(snapshot.workerEventSeq || 0)
     }
   };
+}
+
+function isWorkerCancelledMessage(message) {
+  const normalized = String(message || "").toLowerCase();
+  return normalized.includes("operation was aborted")
+    || normalized.includes("worker job was cancelled")
+    || normalized.includes("cancelled by telegram bot");
 }
 
 async function tryCompleteRecoveryFromBackfill(ctx, turn) {
