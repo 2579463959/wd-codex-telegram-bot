@@ -2,12 +2,48 @@
 
 All notable public changes are documented here.
 
-## Unreleased
+## 1.2.1 - 2026-07-06
 
 ### Added
 
-- Added Traditional Chinese (`zh-tw`) Telegram UI text and matching default
-  Codex response-style prompts.
+- Added Traditional Chinese (`zh-tw`) as a Telegram UI language. The locale is
+  loaded automatically from `src/locales/zh-tw.json`, appears in the language
+  picker, and registers Telegram command descriptions for Telegram's `zh`
+  language code.
+- Translated the bot's menu panels, settings, queue controls, maintenance
+  tools, cleanup flow, recovery notices, command descriptions, and PDF/document
+  handling messages into Traditional Chinese.
+- Added Traditional Chinese default Codex response-style instructions and
+  Telegram Rich Markdown formatting guidance, so `TELEGRAM_LANGUAGE=zh-tw`
+  keeps both UI text and default Codex replies aligned instead of falling back
+  to English response-style prompts.
+
+### Fixed
+
+- Completed the locale against the current `1.2.x` message surface by adding
+  strings introduced after the original PR branch was opened, including PDF
+  upload details, unsupported document/message responses, restart recovery
+  start notices, recovery idle warnings, recovery start-failure text, and
+  recovery idle-timeout stop notices.
+- Preserved all English placeholder tokens in the Traditional Chinese
+  translations, including `{count}`, `{threadId}`, `{remaining}`, `{command}`,
+  `{tool}`, `{paths}`, `{action}`, `{title}`, and other runtime substitution
+  fields required by the Telegram UI.
+
+### Verification
+
+- Added a locale discoverability regression test proving `zh-tw` is present in
+  `VALID_LANGUAGES`, `LANGUAGE_CHOICES`, and `TELEGRAM_LANGUAGE_CODES`, and that
+  `textFor("zh-tw", "language")` returns the translated label.
+- Extended Codex prompt tests to cover the Traditional Chinese persona and
+  Telegram Rich Markdown guidance.
+- Confirmed the locale validator accepts all three shipped locale files:
+  English, Korean, and Traditional Chinese.
+- Confirmed the release with `npm run verify`, including syntax checks, locale
+  validation, ESLint, Prettier package/workflow checks, the full Node test
+  suite, and `npm audit --audit-level=moderate`.
+- Confirmed `npm pack --dry-run --json` includes `src/locales/zh-tw.json` and
+  the updated runtime source/tests in the package payload.
 
 ## 1.2.0 - 2026-07-06
 
