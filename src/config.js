@@ -10,6 +10,7 @@ const CONFIG_VALID = {
   sandbox: new Set(["read-only", "workspace-write", "danger-full-access"]),
   reasoning: new Set(["minimal", "low", "medium", "high", "xhigh"]),
   webSearch: new Set(["disabled", "cached", "live"]),
+  codexTransport: new Set(["sdk", "app-server"]),
   compactStrength: new Set(["default", "light", "balanced", "aggressive"]),
   liveProgressSource: new Set(["agent", "activity", "both"]),
   liveProgressDeletePolicy: new Set(["always", "on_success", "never"])
@@ -40,10 +41,12 @@ export function readConfig(env = process.env, options = {}) {
   const codexSandboxMode = env.CODEX_SANDBOX_MODE?.trim() || "workspace-write";
   const codexReasoningEffort = env.CODEX_REASONING_EFFORT?.trim() || "medium";
   const codexWebSearch = env.CODEX_WEB_SEARCH?.trim() || "disabled";
+  const codexTransport = env.CODEX_TRANSPORT?.trim() || "sdk";
   assertEnum(codexApprovalPolicy, CONFIG_VALID.approval, "CODEX_APPROVAL_POLICY");
   assertEnum(codexSandboxMode, CONFIG_VALID.sandbox, "CODEX_SANDBOX_MODE");
   assertEnum(codexReasoningEffort, CONFIG_VALID.reasoning, "CODEX_REASONING_EFFORT");
   assertEnum(codexWebSearch, CONFIG_VALID.webSearch, "CODEX_WEB_SEARCH");
+  assertEnum(codexTransport, CONFIG_VALID.codexTransport, "CODEX_TRANSPORT");
 
   const cleanupNotifyChatIds = parseTelegramIdCsv(env.CLEANUP_NOTIFY_CHAT_IDS, "CLEANUP_NOTIFY_CHAT_IDS", { allowNegative: true });
 
@@ -54,6 +57,9 @@ export function readConfig(env = process.env, options = {}) {
     allowedThreadIds,
     codexWorkdir: env.CODEX_WORKDIR?.trim() || homeDir,
     codexPath: env.CODEX_PATH?.trim() || "codex",
+    codexTransport,
+    codexAppServerAutostart: parseOptionalBoolean(env.CODEX_APP_SERVER_AUTOSTART) ?? true,
+    codexAppServerConnectTimeoutMs: parseNonnegativeInteger(env.CODEX_APP_SERVER_CONNECT_TIMEOUT_MS, 5000, "CODEX_APP_SERVER_CONNECT_TIMEOUT_MS"),
     codexModel: env.CODEX_MODEL?.trim() || "",
     codexApprovalPolicy,
     codexSandboxMode,

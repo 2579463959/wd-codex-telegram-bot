@@ -1,6 +1,7 @@
 export function createCodexStreamState() {
   return {
     items: new Map(),
+    appServerAgentMessageTextById: new Map(),
     nextSyntheticItemId: 1,
     finalResponse: "",
     usage: null
@@ -56,7 +57,9 @@ export function codexStreamResult(state) {
 export function normalizeCodexStreamEvent(state, event) {
   if (!event || typeof event !== "object") return event;
 
-  if (event.type === "response_item" && event.payload?.type === "message") {
+  if (event.method) return normalizeAppServerNotification(state, event);
+
+  if (event.type === "response_item" && event.payload?.type === "message" && isAssistantMessage(event.payload)) {
     return {
       type: "item.completed",
       item: {
@@ -99,6 +102,81 @@ export function extractMessageText(message) {
     }).filter(Boolean).join("");
   }
   return "";
+}
+
+function normalizeAppServerNotification(state, notification) {
+  const { method, params = {} } = notification;
+  if (method === "thread/started") {
+    return { type: "thread.started", thread_id: params.threadId || params.thread?.id };
+  }
+  if (method === "turn/started") return { type: "turn.started", turn_id: params.turnId || params.turn?.id };
+  if (method === "item/started") return { type: "item.started", item: normalizeAppServerItem(params.item) };
+  if (method === "item/completed") return { type: "item.completed", item: normalizeAppServerItem(params.item) };
+  if (method === "rawResponseItem/completed" && params.item?.type === "message" && isAssistantMessage(params.item)) {
+    return {
+      type: "item.completed",
+      item: {
+        id: streamItemId(state, params.item),
+        type: "agent_message",
+        text: extractMessageText(params.item)
+      }
+    };
+  }
+  if (method === "item/agentMessage/delta") {
+    const itemId = String(params.itemId || streamItemId(state, params));
+    const previous = state.appServerAgentMessageTextById.get(itemId) || "";
+    const text = `${previous}${params.delta || ""}`;
+    state.appServerAgentMessageTextById.set(itemId, text);
+    return {
+      type: "item.updated",
+      item: {
+        id: itemId,
+        type: "agent_message",
+        text
+      }
+    };
+  }
+  if (method === "turn/completed") {
+    if (params.turn?.status === "failed") {
+      return { type: "turn.failed", error: params.turn?.error || { message: "Codex app-server turn failed." } };
+    }
+    return { type: "turn.completed", usage: params.usage ?? null };
+  }
+  if (method === "error") return { type: "error", message: errorMessage(params, "Codex app-server error.") };
+  return notification;
+}
+
+function normalizeAppServerItem(item = {}) {
+  const type = normalizeAppServerItemType(item.type);
+  const normalized = { ...item, type };
+  if (type === "agent_message") normalized.text = extractMessageText(item);
+  if (type === "command_execution") normalized.text = item.aggregatedOutput || item.command || "";
+  if (type === "reasoning" && !normalized.text) normalized.text = [...(item.summary ?? []), ...(item.content ?? [])].join("\n");
+  return normalized;
+}
+
+function normalizeAppServerItemType(type) {
+  const map = {
+    agentMessage: "agent_message",
+    commandExecution: "command_execution",
+    fileChange: "file_change",
+    mcpToolCall: "mcp_tool_call",
+    dynamicToolCall: "dynamic_tool_call",
+    userMessage: "user_message",
+    hookPrompt: "hook_prompt",
+    subAgentActivity: "sub_agent_activity",
+    webSearch: "web_search",
+    imageView: "image_view",
+    imageGeneration: "image_generation",
+    enteredReviewMode: "entered_review_mode",
+    exitedReviewMode: "exited_review_mode",
+    contextCompaction: "context_compaction"
+  };
+  return map[type] || type || "unknown";
+}
+
+function isAssistantMessage(message) {
+  return !message.role || message.role === "assistant";
 }
 
 function streamItemId(state, payload) {

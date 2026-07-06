@@ -28,6 +28,7 @@
 - Queues messages while Codex is busy, with safe, interrupt, and side-thread modes.
 - Provides inline settings for model, reasoning, sandbox, approval, web, language, time zone, locale, and runtime overrides.
 - Sends short progress updates without streaming raw command logs or reasoning text.
+- Recovers interrupted streamed turns by checking Codex session logs before retrying work.
 - Adds backup-first cleanup and local maintenance tools inspired by keep-codex-fast.
 
 ## Screenshots
@@ -81,6 +82,9 @@ Edit `.env`:
 - `ALLOWED_THREAD_IDS`: optional comma-separated positive forum topic/thread ids. When set, authorized users are accepted only in these threads.
 - `CODEX_WORKDIR`: defaults to `$HOME`
 - `CODEX_PATH`: Codex executable, default `codex`. Set this explicitly if Codex is not on `PATH`.
+- `CODEX_TRANSPORT`: `sdk` or `app-server`, default `sdk`. Keep `sdk` for the simplest setup. Use `app-server` only when you want Codex app-server daemon/proxy semantics and `thread/read` recovery.
+- `CODEX_APP_SERVER_AUTOSTART`: when `CODEX_TRANSPORT=app-server`, start the local app-server daemon before connecting, default `true`
+- `CODEX_APP_SERVER_CONNECT_TIMEOUT_MS`: timeout for app-server daemon start/version checks, default `5000`
 - `CODEX_SESSIONS_DIR`: defaults to `$CODEX_HOME/sessions`
 - `CODEX_MODELS_CACHE_FILE`: Codex model cache used by Telegram model buttons, default `$CODEX_HOME/models_cache.json`
 - `CODEX_BASE_URL`, `CODEX_API_KEY`, `CODEX_CONFIG_JSON`, `CODEX_ENV_JSON`: optional `Codex` SDK constructor settings
@@ -157,6 +161,38 @@ For local release-style verification, run:
 ```bash
 npm run verify
 ```
+
+## Codex Transport and Recovery
+
+The default transport is still `CODEX_TRANSPORT=sdk`. In this mode the bot uses
+`@openai/codex-sdk`, which runs Codex CLI with experimental JSON streaming. This
+is the recommended mode for normal installs because it does not require a
+separate app-server daemon.
+
+Stream recovery is hardened in SDK mode: if the JSON event stream goes idle and
+the watchdog would abort the turn, the bot first checks the matching
+`CODEX_SESSIONS_DIR` rollout JSONL. When it finds an agent message plus
+`task_complete`, it sends that final answer and records the recovery instead of
+starting duplicate work.
+
+`CODEX_TRANSPORT=app-server` is optional. It uses:
+
+- `codex app-server daemon start` when `CODEX_APP_SERVER_AUTOSTART=true`
+- `codex app-server proxy` for JSON-RPC communication
+- `thread/start`, `thread/resume`, `turn/start`, and `thread/read`
+
+This mode can rejoin a running app-server thread by `threadId` and can read
+completed turns via `thread/read`. It is more robust for daemon-backed recovery,
+but it adds another local Codex process to operate. Do not run `daemon bootstrap`
+from the bot; bootstrap remains an operator action.
+
+Telegram controls:
+
+- Open `/settings` -> `Runtime` -> `Codex`
+- Choose `SDK`, `app-server`, or `Default`
+- Toggle `Autostart`
+- Use `Test app-server` to start/check the daemon explicitly
+- Use `Save & restart` to apply a transport change to the running service
 
 Use `/whoami` in the target chat or forum topic to confirm your Telegram user
 id, chat id, and thread id before tightening `ALLOWED_CHAT_IDS` or
@@ -360,13 +396,15 @@ Menu-managed runtime settings include:
 - output: reactions, answer format, completion notice delay, maximum message
   length, log output line count, and progress edit interval
 - queue: pending turn limit and pending turn expiry
+- Codex: transport, app-server autostart, app-server connection timeout, app-server status check, and save-and-restart
 - live progress: mode and interval, plus per-chat source/delete controls
 - cleanup: enable/disable, notify time, retention, quarantine, and approval TTL
 - snapshots: enable/disable, notify time, and retention
 - UI: language, time zone, and locale
 
-Secrets, tokens, absolute paths, and process-level Codex SDK constructor values
-still belong in `.env` and require a service restart.
+Secrets, tokens, absolute paths, and process-level Codex constructor values
+still belong in `.env`. Transport changes are saved in bot state, but the
+running process should be restarted after switching between SDK and app-server.
 
 ## Session Cleanup
 

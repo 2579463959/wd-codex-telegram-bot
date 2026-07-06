@@ -180,7 +180,9 @@ export function createRecoveryTurn(candidate, options = {}) {
       restartId: options.restartId || "",
       reason: candidate.reason || "startup_recovery",
       threadId: candidate.threadId || "",
-      recoveryKey: candidate.recoveryKey || recoveryKey(candidate)
+      recoveryKey: candidate.recoveryKey || recoveryKey(candidate),
+      startedAt: candidate.startedAt || "",
+      lastEventAt: candidate.lastEventAt || ""
     },
     text: "Automatic restart recovery",
     inputText: buildRecoveryPrompt(candidate, options),

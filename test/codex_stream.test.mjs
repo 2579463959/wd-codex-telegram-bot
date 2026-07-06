@@ -59,6 +59,45 @@ test("codex stream reducer normalizes response_item message events", () => {
   assert.equal(codexStreamResult(state).finalResponse, "hello world");
 });
 
+test("codex stream reducer ignores non-assistant response_item message events", () => {
+  const state = createCodexStreamState();
+  const update = applyCodexStreamEvent(state, {
+    type: "response_item",
+    payload: {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "secret user text" }]
+    }
+  });
+
+  assert.equal(update.type, "unknown");
+  assert.equal(codexStreamResult(state).finalResponse, "");
+});
+
+test("codex stream reducer normalizes app-server notifications", () => {
+  const state = createCodexStreamState();
+  assert.deepEqual(applyCodexStreamEvent(state, {
+    method: "thread/started",
+    params: { thread: { id: "thread-1" } }
+  }), {
+    type: "thread_started",
+    threadId: "thread-1"
+  });
+  assert.equal(applyCodexStreamEvent(state, {
+    method: "item/agentMessage/delta",
+    params: { threadId: "thread-1", turnId: "turn-1", itemId: "msg-1", delta: "hello" }
+  }).type, "item");
+  assert.equal(applyCodexStreamEvent(state, {
+    method: "item/agentMessage/delta",
+    params: { threadId: "thread-1", turnId: "turn-1", itemId: "msg-1", delta: " world" }
+  }).item.text, "hello world");
+  assert.equal(codexStreamResult(state).finalResponse, "hello world");
+  assert.deepEqual(applyCodexStreamEvent(state, {
+    method: "turn/completed",
+    params: { threadId: "thread-1", turn: { id: "turn-1", status: "completed" } }
+  }), { type: "turn_completed", usage: null });
+});
+
 test("codex stream reducer normalizes event_msg agent and task events", () => {
   const state = createCodexStreamState();
   assert.equal(applyCodexStreamEvent(state, {

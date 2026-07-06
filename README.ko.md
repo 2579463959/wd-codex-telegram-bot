@@ -28,6 +28,7 @@
 - Codex가 작업 중일 때 메시지를 queue에 저장하고, safe, interrupt, side-thread mode로 처리합니다.
 - model, reasoning, sandbox, approval, web, language, time zone, locale, runtime override를 inline 버튼으로 설정합니다.
 - raw command log나 reasoning text를 노출하지 않고 짧은 진행 알림을 보냅니다.
+- 끊긴 streamed turn은 다시 실행하기 전에 Codex session log를 확인해 완료 답변을 회수합니다.
 - keep-codex-fast에서 영감을 받은 backup-first cleanup과 로컬 유지보수 도구를 제공합니다.
 
 안전한 로컬 상태 유지보수 도구는
@@ -71,6 +72,9 @@ cp .env.minimal.example .env
 - `ALLOWED_THREAD_IDS`: 선택값. 양수 forum topic/thread id를 쉼표로 구분합니다. 설정하면 해당 forum topic/thread id에서만 허용됩니다.
 - `CODEX_WORKDIR`: 기본값은 `$HOME`
 - `CODEX_PATH`: Codex 실행 파일, 기본값은 `codex`. Codex가 `PATH`에 없다면 명시적으로 지정하세요.
+- `CODEX_TRANSPORT`: `sdk` 또는 `app-server`, 기본값 `sdk`. 일반 설치는 `sdk`를 권장합니다. Codex app-server daemon/proxy와 `thread/read` 기반 recovery가 필요할 때만 `app-server`를 사용하세요.
+- `CODEX_APP_SERVER_AUTOSTART`: `CODEX_TRANSPORT=app-server`일 때 연결 전에 local app-server daemon을 시작할지 여부, 기본값 `true`
+- `CODEX_APP_SERVER_CONNECT_TIMEOUT_MS`: app-server daemon start/version check timeout, 기본값 `5000`
 - `CODEX_SESSIONS_DIR`: 기본값은 `$CODEX_HOME/sessions`
 - `CODEX_MODELS_CACHE_FILE`: Telegram 모델 버튼에 쓰는 Codex 모델 cache, 기본값은 `$CODEX_HOME/models_cache.json`
 - `CODEX_BASE_URL`, `CODEX_API_KEY`, `CODEX_CONFIG_JSON`, `CODEX_ENV_JSON`: 선택적 `Codex` SDK 생성자 설정
@@ -147,6 +151,37 @@ npm start
 ```bash
 npm run verify
 ```
+
+## Codex Transport와 Recovery
+
+기본 transport는 계속 `CODEX_TRANSPORT=sdk`입니다. 이 모드에서는
+`@openai/codex-sdk`가 Codex CLI의 experimental JSON stream을 실행합니다.
+별도 app-server daemon이 필요 없어서 일반 설치에는 이 모드를 권장합니다.
+
+SDK 모드의 stream recovery도 강화되어 있습니다. JSON event stream이 idle
+상태가 되어 watchdog이 turn을 abort하기 전에, bot은 먼저
+`CODEX_SESSIONS_DIR` 아래의 해당 rollout JSONL을 확인합니다. agent message와
+`task_complete`가 함께 있으면 같은 작업을 다시 시작하지 않고 해당 final
+answer를 Telegram으로 보내고 recovery 기록을 남깁니다.
+
+`CODEX_TRANSPORT=app-server`는 선택 기능입니다. 이 모드는 다음을 사용합니다.
+
+- `CODEX_APP_SERVER_AUTOSTART=true`일 때 `codex app-server daemon start`
+- JSON-RPC 통신용 `codex app-server proxy`
+- `thread/start`, `thread/resume`, `turn/start`, `thread/read`
+
+이 모드는 `threadId`로 실행 중인 app-server thread에 다시 붙을 수 있고,
+`thread/read`로 완료된 turn을 읽을 수 있습니다. daemon 기반 recovery에는 더
+강하지만 운영해야 할 local Codex process가 하나 늘어납니다. `daemon bootstrap`
+은 bot이 실행하지 않으며 operator가 직접 수행할 작업으로 남겨둡니다.
+
+Telegram 조작 경로:
+
+- `/settings` -> `Runtime` -> `Codex`를 엽니다.
+- `SDK`, `app-server`, `Default` 중 하나를 선택합니다.
+- `Autostart`를 켜거나 끕니다.
+- `Test app-server`로 daemon start/check를 명시적으로 실행합니다.
+- transport를 바꾼 뒤 `Save & restart`로 현재 service에 반영합니다.
 
 ## GitHub 자동화
 
@@ -268,12 +303,15 @@ Codex가 inbound Telegram 메시지를 처리하는 동안 같은 chat에 추가
 
 - output: reaction, answer format, completion notice delay, maximum message length, log output line count, progress edit interval
 - queue: pending turn limit, pending turn expiry
+- Codex: transport, app-server autostart, app-server connection timeout, app-server status check, save-and-restart
 - live progress: mode와 interval, chat별 source/delete control
 - cleanup: enable/disable, notify time, retention, quarantine, approval TTL
 - snapshots: enable/disable, notify time, retention
 - UI: language, time zone, locale
 
-Secret, token, 절대경로, process-level Codex SDK constructor value는 계속 `.env`에 두고 service restart로 반영해야 합니다.
+Secret, token, 절대경로, process-level Codex constructor value는 계속 `.env`에 둡니다.
+Transport 변경은 bot state에 저장되지만, SDK와 app-server 사이를 전환한 뒤에는
+running process를 restart해 반영하는 것을 권장합니다.
 
 ## Session Cleanup
 

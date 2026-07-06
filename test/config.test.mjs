@@ -23,6 +23,9 @@ test("readConfig applies stable defaults from env and options", () => {
   assert.equal(config.codexWorkdir, "/home/tester");
   assert.equal(config.codexHome, "/home/tester/.codex");
   assert.equal(config.codexSessionsDir, "/home/tester/.codex/sessions");
+  assert.equal(config.codexTransport, "sdk");
+  assert.equal(config.codexAppServerAutostart, true);
+  assert.equal(config.codexAppServerConnectTimeoutMs, 5000);
   assert.equal(config.stateFile, "/app/state/threads.json");
   assert.equal(config.telegramFormatCodexAnswers, "markdown");
   assert.equal(config.telegramPendingTurnsMax, 10);
@@ -67,6 +70,17 @@ test("readConfig parses restart recovery env values", () => {
   assert.equal(config.botRecoverySuspendAfter, 2);
   assert.equal(config.codexStreamIdleNoticeMs, 1000);
   assert.equal(config.codexStreamIdleAbortMs, 2000);
+});
+
+test("readConfig parses Codex transport env values", () => {
+  const config = readTestConfig({
+    CODEX_TRANSPORT: "app-server",
+    CODEX_APP_SERVER_AUTOSTART: "off",
+    CODEX_APP_SERVER_CONNECT_TIMEOUT_MS: "12000"
+  });
+  assert.equal(config.codexTransport, "app-server");
+  assert.equal(config.codexAppServerAutostart, false);
+  assert.equal(config.codexAppServerConnectTimeoutMs, 12000);
 });
 
 test("readConfig parses optional allowed chat and thread ids", () => {
@@ -124,6 +138,10 @@ test("readConfig rejects invalid enum env values", () => {
   assert.throws(
     () => readTestConfig({ CODEX_COMPACT_STRENGTH: "maximum" }),
     /CODEX_COMPACT_STRENGTH must be default, light, balanced, or aggressive/
+  );
+  assert.throws(
+    () => readTestConfig({ CODEX_TRANSPORT: "daemon" }),
+    /CODEX_TRANSPORT must be one of: sdk, app-server/
   );
 });
 

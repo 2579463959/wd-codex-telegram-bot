@@ -14,9 +14,17 @@ import { promisify } from "node:util";
 import { Codex } from "@openai/codex-sdk";
 import { Telegraf } from "telegraf";
 import { bootstrapBot } from "./app/bootstrap.js";
+import {
+  appServerThreadReadEvents,
+  createAppServerThread,
+  ensureAppServerDaemonStarted,
+  getAppServerDaemonVersion,
+  readAppServerThread
+} from "./codex/app_server.js";
 import { buildInput, mergeReplyContext } from "./codex/input.js";
 import { mergeAdditionalDirectories } from "./codex/options.js";
 import { buildStyleInstructionPrompt } from "./codex/prompts.js";
+import { readCodexSessionBackfill } from "./codex/session_backfill.js";
 import { applyCodexStreamEvent, codexStreamItems, codexStreamResult, createCodexStreamState } from "./codex/stream.js";
 import { createCodexStreamWatchdog, isStreamIdleTimeout, STREAM_IDLE_TIMEOUT_MESSAGE } from "./codex/watchdog.js";
 import { analyzeContextPressure, buildCodexCompactConfig, resolveAutoCompactTokenLimit } from "./codex/compact.js";
@@ -106,6 +114,7 @@ const VALID = {
   reasoning: new Set(["minimal", "low", "medium", "high", "xhigh"]),
   serviceTier: new Set(["fast", "flex"]),
   webSearch: new Set(["disabled", "cached", "live"]),
+  codexTransport: new Set(["sdk", "app-server"]),
   queueMode: new Set(["safe", "interrupt", "side"]),
   language: VALID_LANGUAGES,
   liveProgressSource: new Set(["agent", "activity", "both"]),
@@ -305,7 +314,7 @@ async function handleNewCommand(ctx) {
   if (await rejectIfActive(ctx, chatKey)) return;
 
   const previousThreadId = getChatState(chatKey).threadId || threadCache.get(chatKey)?.id || "";
-  const thread = getCodexClient(chatKey).startThread(buildThreadOptions(chatKey));
+  const thread = startCodexThread(chatKey);
   threadCache.set(chatKey, thread);
   const chat = getChatState(chatKey);
   delete chat.threadId;
@@ -366,7 +375,7 @@ async function handleResumeCommand(ctx, overrideArg = null) {
     return;
   }
 
-  const thread = getCodexClient(chatKey).resumeThread(threadId, buildThreadOptions(chatKey));
+  const thread = resumeCodexThread(chatKey, threadId);
   threadCache.set(chatKey, thread);
   const chat = getChatState(chatKey);
   chat.threadId = threadId;
@@ -1015,7 +1024,7 @@ bot.action(/^usage:(refresh|refresh_confirm)$/, async (ctx) => {
   await handleUsageRefreshButton(ctx, action);
 });
 
-bot.action(/^act:(new|resume_last|stop)$/, async (ctx) => {
+bot.action(/^act:(new|resume_last|stop|restart)$/, async (ctx) => {
   const [, action] = ctx.match;
   await ctx.answerCbQuery();
   if (action === "new") {
@@ -1024,6 +1033,8 @@ bot.action(/^act:(new|resume_last|stop)$/, async (ctx) => {
     await handleResumeCommand(ctx, "last");
   } else if (action === "stop") {
     await handleStopCommand(ctx);
+  } else if (action === "restart") {
+    await handleRestartCommand(ctx);
   }
 });
 
@@ -1228,7 +1239,7 @@ async function processSideTurn(chatKey, preparedTurn) {
 
   try {
     const input = buildInput(applySideThreadPrompt(preparedTurn.inputText), preparedTurn.imagePaths);
-    const thread = getCodexClient(chatKey).startThread(buildThreadOptions(chatKey));
+    const thread = startCodexThread(chatKey);
     const turn = await runCodexTurn(ctx, chatKey, thread, input, abortController.signal, undefined, null, { rememberThreadId: false });
     const response = formatTurn(turn);
     await replyHtml(ctx, b("Side reply"));
@@ -1420,7 +1431,16 @@ async function runCodexTurn(ctx, chatKey, thread, input, signal, workingMessageI
     return codexStreamResult(streamState);
   } catch (error) {
     streamOutcome = watchdog.timeoutTriggered ? STREAM_IDLE_TIMEOUT_MESSAGE : "error";
-    if (watchdog.timeoutTriggered) throw new Error(STREAM_IDLE_TIMEOUT_MESSAGE);
+    if (watchdog.timeoutTriggered) {
+      if (await tryBackfillCompletedStream(chatKey, thread, streamState, {
+        sinceMs: streamStartedAt,
+        reason: "stream_idle_timeout"
+      })) {
+        streamOutcome = "backfilled_after_idle_timeout";
+        return codexStreamResult(streamState);
+      }
+      throw new Error(STREAM_IDLE_TIMEOUT_MESSAGE);
+    }
     throw error;
   } finally {
     watchdog.stop();
@@ -1432,6 +1452,66 @@ async function runCodexTurn(ctx, chatKey, thread, input, signal, workingMessageI
       finalResponseLength: streamState.finalResponse.length
     });
   }
+}
+
+async function tryBackfillCompletedStream(chatKey, thread, streamState, { sinceMs = 0, reason = "manual" } = {}) {
+  const threadId = thread?.id || getChatState(chatKey).threadId || "";
+  if (!threadId) return false;
+  let events = [];
+  try {
+    events = await readBackfillEventsForThread(thread, threadId, { sinceMs, reason });
+  } catch (error) {
+    await recordCodexStreamBackfill(chatKey, {
+      threadId,
+      reason,
+      recovered: false,
+      eventCount: 0,
+      finalResponseLength: streamState.finalResponse.length,
+      source: threadTransport(thread),
+      status: error instanceof Error ? error.message : String(error)
+    });
+    return false;
+  }
+  if (events.length === 0) return false;
+
+  let completed = false;
+  let failed = false;
+  for (const event of events) {
+    const update = applyCodexStreamEvent(streamState, event);
+    if (update.type === "turn_completed") completed = true;
+    if (update.type === "error") failed = true;
+  }
+  const recovered = completed && !failed && Boolean(streamState.finalResponse);
+  await recordCodexStreamBackfill(chatKey, {
+    threadId,
+    reason,
+    recovered,
+    eventCount: events.length,
+    finalResponseLength: streamState.finalResponse.length,
+    source: threadTransport(thread)
+  });
+  if (recovered) await appendRecoveryEvent({ type: "turn_completed", chatKey, threadId, source: "backfill" });
+  return recovered;
+}
+
+async function readBackfillEventsForThread(thread, threadId, { sinceMs = 0 } = {}) {
+  if (threadTransport(thread) === "app-server" || codexTransport() === "app-server") {
+    const response = await readAppServerThread({
+      threadId,
+      codexPath: config.codexPath,
+      codexEnv: config.codexEnv,
+      autostart: runtimeValue("codexAppServerAutostart"),
+      connectTimeoutMs: runtimeValue("codexAppServerConnectTimeoutMs"),
+      includeTurns: true
+    });
+    return appServerThreadReadEvents(response, { threadId });
+  }
+  const backfill = await readCodexSessionBackfill({
+    sessionsDir: config.codexSessionsDir,
+    threadId,
+    sinceMs
+  });
+  return backfill.events;
 }
 
 function createLinkedAbortController(parentSignal) {
@@ -1450,7 +1530,7 @@ function createLinkedAbortController(parentSignal) {
 }
 
 async function refreshUsageSample(chatKey, signal) {
-  const thread = getCodexClient(chatKey).startThread(buildThreadOptions(chatKey));
+  const thread = startCodexThread(chatKey);
   await thread.run("Reply exactly: OK.", { signal });
   if (!thread.id) throw new Error("Usage refresh did not create a Codex thread id.");
 
@@ -1621,6 +1701,25 @@ async function recordCodexStreamUnknownEvent(chatKey, event, elapsedMs) {
   });
 }
 
+async function recordCodexStreamBackfill(chatKey, metadata) {
+  if (!config.botRestartRecoveryEnabled) return;
+  await safeRecoveryWrite(async () => {
+    await upsertActiveTurnSnapshot(config.botRecoveryDir, chatKey, {
+      lastEventAt: new Date().toISOString(),
+      lastKnownStatus: metadata.recovered ? "codex_stream_backfilled" : "codex_stream_backfill_missed",
+      backfillSource: metadata.source || "",
+      backfillEventCount: metadata.eventCount ?? 0,
+      backfillFinalResponseLength: metadata.finalResponseLength ?? 0
+    });
+    await appendRecoveryEvent({
+      type: metadata.recovered ? "codex_stream_backfilled" : "codex_stream_backfill_missed",
+      chatKey,
+      ...metadata,
+      status: truncate(metadata.status || "", 500)
+    });
+  });
+}
+
 async function recordStreamIdleNotice(ctx, chatKey, idleMs, isRecoveryTurn) {
   if (!config.botRestartRecoveryEnabled) return;
   await safeRecoveryWrite(async () => {
@@ -1761,6 +1860,38 @@ function getCodexClient(chatKey) {
   return codexClients.get(cacheKey);
 }
 
+function codexTransport() {
+  return runtimeValue("codexTransport");
+}
+
+function startCodexThread(chatKey) {
+  return createCodexThread(chatKey, "");
+}
+
+function resumeCodexThread(chatKey, threadId) {
+  return createCodexThread(chatKey, threadId);
+}
+
+function createCodexThread(chatKey, threadId = "") {
+  if (codexTransport() === "app-server") {
+    return createAppServerThread({
+      threadId,
+      threadOptions: buildAppServerThreadOptions(chatKey),
+      codexPath: config.codexPath,
+      codexEnv: config.codexEnv,
+      autostart: runtimeValue("codexAppServerAutostart"),
+      connectTimeoutMs: runtimeValue("codexAppServerConnectTimeoutMs")
+    });
+  }
+  return threadId
+    ? getCodexClient(chatKey).resumeThread(threadId, buildThreadOptions(chatKey))
+    : getCodexClient(chatKey).startThread(buildThreadOptions(chatKey));
+}
+
+function threadTransport(thread) {
+  return thread?.transport === "app-server" ? "app-server" : "sdk";
+}
+
 function defaultChatOptions() {
   const options = {
     workingDirectory: config.codexWorkdir,
@@ -1790,6 +1921,16 @@ function buildThreadOptions(chatKey) {
   return threadOptions;
 }
 
+function buildAppServerThreadOptions(chatKey) {
+  const threadOptions = { ...getEffectiveOptions(chatKey) };
+  for (const key of ["streamEvents", "liveProgressEnabled", "liveProgressSource", "liveProgressDeletePolicy"]) {
+    delete threadOptions[key];
+  }
+  const codexConfig = { ...(config.codexConfig ?? {}), ...buildCodexCompactConfig(config) };
+  if (Object.keys(codexConfig).length > 0) threadOptions.codexConfig = codexConfig;
+  return threadOptions;
+}
+
 function buildTurnOptions(chatKey, signal) {
   const chat = getChatState(chatKey);
   const options = { signal };
@@ -1811,12 +1952,11 @@ function getChatState(chatKey) {
 
 function getOrCreateThread(chatKey) {
   const cached = threadCache.get(chatKey);
-  if (cached) return cached;
+  if (cached && threadTransport(cached) === codexTransport()) return cached;
+  if (cached) threadCache.delete(chatKey);
 
   const savedThreadId = getChatState(chatKey).threadId;
-  const thread = savedThreadId
-    ? getCodexClient(chatKey).resumeThread(savedThreadId, buildThreadOptions(chatKey))
-    : getCodexClient(chatKey).startThread(buildThreadOptions(chatKey));
+  const thread = savedThreadId ? resumeCodexThread(chatKey, savedThreadId) : startCodexThread(chatKey);
   threadCache.set(chatKey, thread);
   return thread;
 }
@@ -2199,6 +2339,10 @@ async function scheduleStartupRecovery({ force = false, notifyCtx = null, source
       const candidate = turn.recovery;
       const recoveryCtx = createSyntheticCtx(turn);
       try {
+        if (await tryCompleteRecoveryFromBackfill(recoveryCtx, turn)) {
+          started += 1;
+          continue;
+        }
         await markRecoveryAttempt(config.botRecoveryDir, candidate, { status: "started" });
         await notifyRecoveryStarted(recoveryCtx, turn);
         await enqueuePendingTurnFrontForced(turn.chatKey, turn);
@@ -2221,6 +2365,40 @@ async function scheduleStartupRecovery({ force = false, notifyCtx = null, source
     startupRecoveryRunning = false;
   }
   return started > 0;
+}
+
+async function tryCompleteRecoveryFromBackfill(ctx, turn) {
+  const candidate = turn.recovery || {};
+  const threadId = String(candidate.threadId || "").trim();
+  if (!threadId) return false;
+  const streamState = createCodexStreamState();
+  const thread = createCodexThread(turn.chatKey, threadId);
+  const recovered = await tryBackfillCompletedStream(turn.chatKey, thread, streamState, {
+    sinceMs: Date.parse(candidate.startedAt || candidate.lastEventAt || "") || 0,
+    reason: "startup_recovery_preflight"
+  });
+  if (!recovered) return false;
+
+  const response = formatTurn(codexStreamResult(streamState));
+  if (!response) return false;
+  await appendRecoveryEvent({
+    type: "recovery_completed_from_backfill",
+    chatKey: turn.chatKey,
+    threadId,
+    recoveryKey: candidate.recoveryKey || ""
+  });
+  await recordTelegramReplyStarted(turn.chatKey, response);
+  try {
+    await replyCodexAnswer(ctx, response);
+    await recordTelegramReplyCompleted(turn.chatKey, response);
+  } catch (error) {
+    await recordTelegramReplyFailed(turn.chatKey, error);
+    throw error;
+  }
+  await recordActiveTurnCompleted(turn.chatKey, threadId);
+  await markRecoveryAttempt(config.botRecoveryDir, candidate, { status: "completed" });
+  await clearCompletedRecovery(config.botRecoveryDir);
+  return true;
 }
 
 async function notifyRecoveryStarted(ctx, turn) {
@@ -2534,16 +2712,19 @@ function setRuntimeValue(target, key, rawValue) {
     return;
   }
   const value = String(rawValue).trim();
-  if (key === "telegramReactionsEnabled" || key === "telegramLiveProgressEnabled" || key === "cleanupEnabled" || key === "snapshotEnabled") {
+  if (key === "telegramReactionsEnabled" || key === "telegramLiveProgressEnabled" || key === "cleanupEnabled" || key === "snapshotEnabled" || key === "codexAppServerAutostart") {
     target[key] = parseRequiredBoolean(value, key);
   } else if (key === "telegramFormatCodexAnswers") {
     target[key] = parseCodexAnswerFormat(value);
+  } else if (key === "codexTransport") {
+    if (!VALID.codexTransport.has(value)) throw new Error("codexTransport must be sdk or app-server.");
+    target[key] = value;
   } else if (key === "telegramLiveProgressMode") {
     if (!["brief", "korean-brief"].includes(value)) throw new Error("telegramLiveProgressMode must be brief or korean-brief.");
     target[key] = value;
   } else if (key === "cleanupNotifyTime" || key === "snapshotNotifyTime") {
     target[key] = parseTimeOfDay(value);
-  } else if (key === "telegramCompletionNoticeSeconds" || key === "telegramPendingTurnsMax" || key === "telegramPendingTurnMaxAgeSeconds" || key === "cleanupRetentionDays" || key === "cleanupQuarantineDays" || key === "cleanupPlanTtlHours" || key === "snapshotRetentionDays" || key === "logsMaxLines" || key === "maxTelegramChars") {
+  } else if (key === "telegramCompletionNoticeSeconds" || key === "telegramPendingTurnsMax" || key === "telegramPendingTurnMaxAgeSeconds" || key === "cleanupRetentionDays" || key === "cleanupQuarantineDays" || key === "cleanupPlanTtlHours" || key === "snapshotRetentionDays" || key === "logsMaxLines" || key === "maxTelegramChars" || key === "codexAppServerConnectTimeoutMs") {
     target[key] = parseStrictNonnegativeInteger(value, key);
   } else if (key === "telegramLiveProgressIntervalMs" || key === "progressEditIntervalMs") {
     const parsed = parseStrictNonnegativeInteger(value, key);
@@ -2555,8 +2736,10 @@ function setRuntimeValue(target, key, rawValue) {
 
 async function updateRuntimeSetting(key, rawValue) {
   if (!state.runtime || typeof state.runtime !== "object") state.runtime = {};
+  const previousTransport = codexTransport();
   const value = String(rawValue || "").replaceAll("_", ":");
   setRuntimeValue(state.runtime, key, value);
+  if (key === "codexTransport" && codexTransport() !== previousTransport) threadCache.clear();
   await saveState(config.stateFile, state);
 }
 
@@ -3713,6 +3896,9 @@ async function sendPanel(ctx, panel, options = {}) {
   } else if (panel === "settings_runtime_queue") {
     html = runtimeQueuePanelHtml();
     keyboard = runtimeQueueKeyboard();
+  } else if (panel === "settings_runtime_codex") {
+    html = runtimeCodexPanelHtml();
+    keyboard = runtimeCodexKeyboard();
   } else if (panel === "settings_runtime_cleanup") {
     html = runtimeCleanupPanelHtml();
     keyboard = runtimeCleanupKeyboard();
@@ -3764,6 +3950,7 @@ async function formatMainPanelHtml(chatKey) {
     b("Codex Control"),
     "",
     `Thread: ${code(details.threadId || "not started")}`,
+    `Transport: ${code(runtimeValue("codexTransport"))}`,
     `Active turn: ${code(details.active ? "yes" : "no")}`,
     `Queue: ${code(`${details.queued} pending, mode=${details.queueMode}, paused=${details.queuePaused ? "yes" : "no"}`)}`,
     `Model: ${code(options.model || "default")}`,
@@ -3847,6 +4034,8 @@ function runtimePanelHtml() {
 
 function runtimeSummaryHtml() {
   return formatKeyValueHtml("Runtime overrides:", [
+    ["codex transport", runtimeValue("codexTransport")],
+    ["app-server autostart", runtimeValue("codexAppServerAutostart")],
     ["reactions", runtimeValue("telegramReactionsEnabled")],
     ["answer format", runtimeValue("telegramFormatCodexAnswers")],
     ["completion notice", `${runtimeValue("telegramCompletionNoticeSeconds")}s`],
@@ -3875,6 +4064,15 @@ function runtimeQueuePanelHtml() {
     ["pending turns max", runtimeValue("telegramPendingTurnsMax")],
     ["pending max age seconds", runtimeValue("telegramPendingTurnMaxAgeSeconds")],
     ["pending max age", runtimeValue("telegramPendingTurnMaxAgeSeconds") <= 0 ? "off" : formatDurationSeconds(runtimeValue("telegramPendingTurnMaxAgeSeconds"))]
+  ]);
+}
+
+function runtimeCodexPanelHtml() {
+  return formatKeyValueHtml("Codex runtime:", [
+    ["transport", runtimeValue("codexTransport")],
+    ["app-server autostart", runtimeValue("codexAppServerAutostart")],
+    ["app-server connect timeout", `${runtimeValue("codexAppServerConnectTimeoutMs")}ms`],
+    ["codex path", config.codexPath]
   ]);
 }
 
@@ -4103,6 +4301,9 @@ function runtimeKeyboard() {
       { text: t("cleanup"), callback_data: "p:settings_runtime_cleanup" },
       { text: t("snapshots"), callback_data: "p:settings_runtime_snapshot" }
     ],
+    [
+      { text: "Codex", callback_data: "p:settings_runtime_codex" }
+    ],
     [{ text: t("settings"), callback_data: "p:settings" }, { text: t("main"), callback_data: "p:main" }],
     [{ text: `← ${t("back")}`, callback_data: "p:settings" }]
   ]);
@@ -4163,6 +4364,32 @@ function runtimeQueueKeyboard() {
       { text: "2h", callback_data: "set:runtime_pendingage:7200" },
       { text: "24h", callback_data: "set:runtime_pendingage:86400" },
       { text: t("default"), callback_data: "set:runtime_pendingage:default" }
+    ],
+    [{ text: t("runtime"), callback_data: "p:settings_runtime" }, { text: t("settings"), callback_data: "p:settings" }]
+  ]);
+}
+
+function runtimeCodexKeyboard() {
+  return inlineKeyboard([
+    [
+      { text: "SDK", callback_data: "set:runtime_codextransport:sdk" },
+      { text: "app-server", callback_data: "set:runtime_codextransport:app-server" },
+      { text: t("default"), callback_data: "set:runtime_codextransport:default" }
+    ],
+    [
+      { text: "Autostart on", callback_data: "set:runtime_appserverautostart:on" },
+      { text: "off", callback_data: "set:runtime_appserverautostart:off" },
+      { text: t("default"), callback_data: "set:runtime_appserverautostart:default" }
+    ],
+    [
+      { text: "Timeout 3s", callback_data: "set:runtime_appservertimeout:3000" },
+      { text: "5s", callback_data: "set:runtime_appservertimeout:5000" },
+      { text: "10s", callback_data: "set:runtime_appservertimeout:10000" },
+      { text: t("default"), callback_data: "set:runtime_appservertimeout:default" }
+    ],
+    [
+      { text: "Test app-server", callback_data: "tool:appserver_status" },
+      { text: "Save & restart", callback_data: "act:restart" }
     ],
     [{ text: t("runtime"), callback_data: "p:settings_runtime" }, { text: t("settings"), callback_data: "p:settings" }]
   ]);
@@ -4512,6 +4739,9 @@ function runtimeSettingKey(actionKey) {
     runtime_completionnotice: "telegramCompletionNoticeSeconds",
     runtime_pendingmax: "telegramPendingTurnsMax",
     runtime_pendingage: "telegramPendingTurnMaxAgeSeconds",
+    runtime_codextransport: "codexTransport",
+    runtime_appserverautostart: "codexAppServerAutostart",
+    runtime_appservertimeout: "codexAppServerConnectTimeoutMs",
     runtime_liveprogressmode: "telegramLiveProgressMode",
     runtime_liveprogressinterval: "telegramLiveProgressIntervalMs",
     runtime_cleanup: "cleanupEnabled",
@@ -4537,6 +4767,36 @@ function runtimeSettingValue(actionKey, value) {
   return value;
 }
 
+async function handleAppServerStatusButton(ctx) {
+  const rows = [
+    ["transport", runtimeValue("codexTransport")],
+    ["autostart", runtimeValue("codexAppServerAutostart")]
+  ];
+  try {
+    if (runtimeValue("codexAppServerAutostart")) {
+      await ensureAppServerDaemonStarted({
+        codexPath: config.codexPath,
+        codexEnv: config.codexEnv,
+        timeoutMs: runtimeValue("codexAppServerConnectTimeoutMs")
+      });
+      rows.push(["daemon start", "ok"]);
+    } else {
+      rows.push(["daemon start", "skipped"]);
+    }
+    const version = await getAppServerDaemonVersion({
+      codexPath: config.codexPath,
+      codexEnv: config.codexEnv,
+      timeoutMs: runtimeValue("codexAppServerConnectTimeoutMs")
+    });
+    rows.push(["daemon version", version?.running_app_server_version || version?.app_server_version || "running"]);
+    rows.push(["cli version", version?.cli_version || "unknown"]);
+  } catch (error) {
+    rows.push(["status", "failed"]);
+    rows.push(["error", truncate(error instanceof Error ? error.message : String(error), 240)]);
+  }
+  await editOrReplyHtml(ctx, formatKeyValueHtml("Codex app-server:", rows), runtimeCodexKeyboard());
+}
+
 async function handleToolButton(ctx, action) {
   const chatKey = getChatKey(ctx);
   if (action === "health") {
@@ -4551,6 +4811,8 @@ async function handleToolButton(ctx, action) {
     await editOrReplyHtml(ctx, formatWhoamiHtml(ctx), withToolsBack());
   } else if (action === "config") {
     await editOrReplyHtml(ctx, formatConfigHtml(), withToolsBack());
+  } else if (action === "appserver_status") {
+    await handleAppServerStatusButton(ctx);
   } else if (action === "backup") {
     const backup = await createStateBackup("manual");
     await replyHtml(ctx, formatKeyValueHtml("Backup created:", [
@@ -4869,8 +5131,11 @@ function formatHandoffResultHtml(result) {
 }
 
 function formatConfigHtml() {
-  return formatKeyValueHtml("SDK constructor options:", [
+  return formatKeyValueHtml("Codex runtime config:", [
+    ["transport", runtimeValue("codexTransport")],
     ["codexPathOverride", config.codexPath],
+    ["app-server autostart", runtimeValue("codexAppServerAutostart")],
+    ["app-server connect timeout", `${runtimeValue("codexAppServerConnectTimeoutMs")}ms`],
     ["baseUrl", config.codexBaseUrl || "default"],
     ["apiKey", config.codexApiKey ? "set" : "default auth"],
     ["config", config.codexConfig ? "set" : "none"],
@@ -5280,6 +5545,8 @@ async function formatDoctorHtml(chatKey) {
     ["current model", options.model || "default"],
     ["current thinking", options.modelReasoningEffort],
     ["current serviceTier", options.serviceTier || "default"],
+    ["codex transport", runtimeValue("codexTransport")],
+    ["app-server autostart", runtimeValue("codexAppServerAutostart")],
     ["upgrade smoke test", "/status -> /model -> /fast_status -> message -> /new -> /resume_last"]
   ];
   return formatKeyValueHtml("Codex doctor:", rows);

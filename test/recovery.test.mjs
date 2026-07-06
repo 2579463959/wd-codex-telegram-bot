@@ -200,6 +200,7 @@ test("startup recovery actions create recovery turns from restart marker candida
   assert.equal(actions.turns[0].kind, "recovery");
   assert.equal(actions.turns[0].messageThreadId, 300);
   assert.equal(actions.turns[0].recovery.threadId, "thread-1");
+  assert.equal(actions.turns[0].recovery.lastEventAt, "2026-06-15T00:00:00.000Z");
   assert.match(actions.turns[0].inputText, /threadId: thread-1/);
   assert.deepEqual(actions.skippedActive, []);
 });
