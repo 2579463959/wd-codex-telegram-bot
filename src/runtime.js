@@ -102,11 +102,13 @@ import {
   removeActiveTurnSnapshot,
   upsertActiveTurnSnapshot
 } from "./recovery/state.js";
+import { startRecoveryBackfillPoller } from "./recovery/backfill_poller.js";
 import { booleanOptionKeyboardRows } from "./ui/keyboards.js";
 import { formatSettingPanelHtml } from "./ui/panels.js";
 
 const execFileAsync = promisify(execFile);
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const STREAM_BACKFILLED_MESSAGE = "stream_backfilled";
 
 const VALID = {
   approval: new Set(["never", "on-request", "on-failure", "untrusted"]),
@@ -1382,6 +1384,7 @@ async function runCodexTurn(ctx, chatKey, thread, input, signal, workingMessageI
   let streamOutcome = "completed";
   const progressState = liveProgress;
   const isRecoveryTurn = options.turnKind === "recovery";
+  let backfillPollRecovered = false;
   const watchdog = createCodexStreamWatchdog({
     noticeMs: runtimeValue("codexStreamIdleNoticeMs"),
     abortMs: runtimeValue("codexStreamIdleAbortMs"),
@@ -1389,6 +1392,17 @@ async function runCodexTurn(ctx, chatKey, thread, input, signal, workingMessageI
     onTimeout: ({ idleMs }) => recordStreamIdleTimeout(chatKey, idleMs),
     abort: (error) => linkedAbort.controller.abort(error)
   });
+  const backfillPoller = isRecoveryTurn
+    ? startCodexStreamBackfillPoller(chatKey, thread, streamState, {
+      sinceMs: streamStartedAt,
+      intervalMs: runtimeValue("botRecoveryBackfillPollMs"),
+      onRecovered: () => {
+        backfillPollRecovered = true;
+        streamOutcome = "backfilled_after_poll";
+        linkedAbort.controller.abort(new Error(STREAM_BACKFILLED_MESSAGE));
+      }
+    })
+    : null;
   watchdog.start();
 
   try {
@@ -1430,6 +1444,11 @@ async function runCodexTurn(ctx, chatKey, thread, input, signal, workingMessageI
 
     return codexStreamResult(streamState);
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (backfillPollRecovered || message === STREAM_BACKFILLED_MESSAGE) {
+      streamOutcome = "backfilled_after_poll";
+      return codexStreamResult(streamState);
+    }
     streamOutcome = watchdog.timeoutTriggered ? STREAM_IDLE_TIMEOUT_MESSAGE : "error";
     if (watchdog.timeoutTriggered) {
       if (await tryBackfillCompletedStream(chatKey, thread, streamState, {
@@ -1443,6 +1462,7 @@ async function runCodexTurn(ctx, chatKey, thread, input, signal, workingMessageI
     }
     throw error;
   } finally {
+    backfillPoller?.stop();
     watchdog.stop();
     linkedAbort.cleanup();
     await recordCodexStreamIteratorClosed(chatKey, {
@@ -1454,7 +1474,41 @@ async function runCodexTurn(ctx, chatKey, thread, input, signal, workingMessageI
   }
 }
 
-async function tryBackfillCompletedStream(chatKey, thread, streamState, { sinceMs = 0, reason = "manual" } = {}) {
+function startCodexStreamBackfillPoller(chatKey, thread, streamState, { sinceMs = 0, intervalMs = 0, onRecovered = () => {} } = {}) {
+  if (!config.botRestartRecoveryEnabled) return null;
+  if (!Number.isFinite(Number(intervalMs)) || Number(intervalMs) <= 0) return null;
+  return startRecoveryBackfillPoller({
+    intervalMs,
+    check: async () => {
+      const backfillState = createCodexStreamState();
+      const recovered = await tryBackfillCompletedStream(chatKey, thread, backfillState, {
+        sinceMs,
+        reason: "recovery_backfill_poll",
+        recordMiss: false
+      });
+      if (recovered) copyCodexStreamState(streamState, backfillState);
+      return recovered;
+    },
+    onRecovered,
+    onError: (error, { reason } = {}) => appendRecoveryEvent({
+      type: "recovery_backfill_poll_error",
+      chatKey,
+      threadId: thread?.id || getChatState(chatKey).threadId || "",
+      reason: reason || "interval",
+      message: truncate(error instanceof Error ? error.message : String(error), 500)
+    })
+  });
+}
+
+function copyCodexStreamState(target, source) {
+  target.items = source.items;
+  target.appServerAgentMessageTextById = source.appServerAgentMessageTextById;
+  target.nextSyntheticItemId = source.nextSyntheticItemId;
+  target.finalResponse = source.finalResponse;
+  target.usage = source.usage;
+}
+
+async function tryBackfillCompletedStream(chatKey, thread, streamState, { sinceMs = 0, reason = "manual", recordMiss = true } = {}) {
   const threadId = thread?.id || getChatState(chatKey).threadId || "";
   if (!threadId) return false;
   let events = [];
@@ -1482,14 +1536,16 @@ async function tryBackfillCompletedStream(chatKey, thread, streamState, { sinceM
     if (update.type === "error") failed = true;
   }
   const recovered = completed && !failed && Boolean(streamState.finalResponse);
-  await recordCodexStreamBackfill(chatKey, {
-    threadId,
-    reason,
-    recovered,
-    eventCount: events.length,
-    finalResponseLength: streamState.finalResponse.length,
-    source: threadTransport(thread)
-  });
+  if (recovered || recordMiss) {
+    await recordCodexStreamBackfill(chatKey, {
+      threadId,
+      reason,
+      recovered,
+      eventCount: events.length,
+      finalResponseLength: streamState.finalResponse.length,
+      source: threadTransport(thread)
+    });
+  }
   if (recovered) await appendRecoveryEvent({ type: "turn_completed", chatKey, threadId, source: "backfill" });
   return recovered;
 }
@@ -3487,6 +3543,7 @@ function buildConfigSummary() {
     botRecoveryStaleSeconds: config.botRecoveryStaleSeconds,
     botRecoveryTurnTtlSeconds: config.botRecoveryTurnTtlSeconds,
     botRecoverySuspendAfter: config.botRecoverySuspendAfter,
+    botRecoveryBackfillPollMs: config.botRecoveryBackfillPollMs,
     telegramLanguage: config.telegramLanguage,
     telegramTimeZone: config.telegramTimeZone,
     telegramLocale: config.telegramLocale,
@@ -5143,6 +5200,7 @@ function formatConfigHtml() {
     ["compact strength", config.codexCompactStrength],
     ["context guard", config.codexContextGuardEnabled ? `${config.codexContextCompactThresholdPercent}% / min ${config.codexContextMinRemainingTokens} tokens` : "off"],
     ["restart recovery", config.botRestartRecoveryEnabled ? `on, delay ${config.botRestartDelaySeconds}s, drain ${config.botRestartDrainTimeoutSeconds}s` : "off"],
+    ["recovery backfill poll", config.botRecoveryBackfillPollMs > 0 ? `${config.botRecoveryBackfillPollMs}ms` : "off"],
     ["recovery dir", config.botRecoveryDir],
     ["env", config.codexEnv ? "set" : "inherit process.env"],
     ["modelsCacheFile", config.codexModelsCacheFile]
@@ -5422,6 +5480,7 @@ async function formatRecoveryStatusHtml() {
     ["marker recoveries", marker?.recoveries?.length ?? 0],
     ["stale seconds", config.botRecoveryStaleSeconds],
     ["suspend after", config.botRecoverySuspendAfter],
+    ["backfill poll", config.botRecoveryBackfillPollMs > 0 ? `${config.botRecoveryBackfillPollMs}ms` : "off"],
     ["recent recovery keys", dedupeEntries.length],
     ["last active", activeSnapshots.at(-1)?.chatKey || "none"]
   ]);
@@ -5547,6 +5606,7 @@ async function formatDoctorHtml(chatKey) {
     ["current serviceTier", options.serviceTier || "default"],
     ["codex transport", runtimeValue("codexTransport")],
     ["app-server autostart", runtimeValue("codexAppServerAutostart")],
+    ["recovery backfill poll", config.botRecoveryBackfillPollMs > 0 ? `${config.botRecoveryBackfillPollMs}ms` : "off"],
     ["upgrade smoke test", "/status -> /model -> /fast_status -> message -> /new -> /resume_last"]
   ];
   return formatKeyValueHtml("Codex doctor:", rows);

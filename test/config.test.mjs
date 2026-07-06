@@ -39,6 +39,7 @@ test("readConfig applies stable defaults from env and options", () => {
   assert.equal(config.botRecoveryStaleSeconds, 21600);
   assert.equal(config.botRecoveryTurnTtlSeconds, 86400);
   assert.equal(config.botRecoverySuspendAfter, 3);
+  assert.equal(config.botRecoveryBackfillPollMs, 30_000);
   assert.equal(config.codexStreamIdleNoticeMs, 120_000);
   assert.equal(config.codexStreamIdleAbortMs, 900_000);
   assert.equal(config.uploadRetentionDays, 7);
@@ -57,6 +58,7 @@ test("readConfig parses restart recovery env values", () => {
     BOT_RECOVERY_STALE_SECONDS: "120",
     BOT_RECOVERY_TURN_TTL_SECONDS: "240",
     BOT_RECOVERY_SUSPEND_AFTER: "2",
+    BOT_RECOVERY_BACKFILL_POLL_MS: "5000",
     CODEX_STREAM_IDLE_NOTICE_MS: "1000",
     CODEX_STREAM_IDLE_ABORT_MS: "2000"
   });
@@ -68,6 +70,7 @@ test("readConfig parses restart recovery env values", () => {
   assert.equal(config.botRecoveryStaleSeconds, 120);
   assert.equal(config.botRecoveryTurnTtlSeconds, 240);
   assert.equal(config.botRecoverySuspendAfter, 2);
+  assert.equal(config.botRecoveryBackfillPollMs, 5000);
   assert.equal(config.codexStreamIdleNoticeMs, 1000);
   assert.equal(config.codexStreamIdleAbortMs, 2000);
 });

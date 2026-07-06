@@ -128,6 +128,7 @@ cp .env.minimal.example .env
 - `BOT_RECOVERY_STALE_SECONDS`: startup 자동 recovery 후보의 최대 age, 기본값 `21600`
 - `BOT_RECOVERY_TURN_TTL_SECONDS`: recovery queue item TTL, 기본값 `86400`
 - `BOT_RECOVERY_SUSPEND_AFTER`: 같은 recovery key 자동 복구를 suspend할 attempt 수, 기본값 `3`
+- `BOT_RECOVERY_BACKFILL_POLL_MS`: startup recovery turn 중 Codex session backfill을 확인할 간격, 기본값 `30000`; `0`이면 비활성화
 - `CODEX_STREAM_IDLE_NOTICE_MS`: recovery 안내를 보내기 전 stream idle 시간, 기본값 `120000`
 - `CODEX_STREAM_IDLE_ABORT_MS`: SDK turn을 중단하기 전 stream idle 시간, 기본값 `900000`
 - `UPLOAD_DIR`: Codex로 보내기 전에 다운로드한 Telegram 이미지 입력 저장 위치, 기본값 `./state/uploads`
@@ -163,6 +164,12 @@ SDK 모드의 stream recovery도 강화되어 있습니다. JSON event stream이
 `CODEX_SESSIONS_DIR` 아래의 해당 rollout JSONL을 확인합니다. agent message와
 `task_complete`가 함께 있으면 같은 작업을 다시 시작하지 않고 해당 final
 answer를 Telegram으로 보내고 recovery 기록을 남깁니다.
+
+startup recovery turn은 stream이 조용한 동안 같은 backfill source를 주기적으로
+확인합니다. 기본값은 `BOT_RECOVERY_BACKFILL_POLL_MS=30000`이므로 recovery turn이
+완료됐는데 SDK stream 후속 이벤트가 오지 않는 경우에도 hard idle abort까지
+기다리지 않고 다음 30초 체크에서 회수할 수 있습니다. 이 poller는 recovery
+전용이며, 일반 사용자 turn은 기존 stream/watchdog 경로를 그대로 사용합니다.
 
 `CODEX_TRANSPORT=app-server`는 선택 기능입니다. 이 모드는 다음을 사용합니다.
 

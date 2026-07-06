@@ -138,6 +138,7 @@ Edit `.env`:
 - `BOT_RECOVERY_STALE_SECONDS`: maximum age for automatic startup recovery candidates, default `21600`
 - `BOT_RECOVERY_TURN_TTL_SECONDS`: recovery queue item TTL, default `86400`
 - `BOT_RECOVERY_SUSPEND_AFTER`: suspend automatic recovery after this many attempts for the same key, default `3`
+- `BOT_RECOVERY_BACKFILL_POLL_MS`: during startup recovery turns, poll Codex session backfill at this interval, default `30000`; set `0` to disable
 - `CODEX_STREAM_IDLE_NOTICE_MS`: stream idle time before a recovery notice is sent, default `120000`
 - `CODEX_STREAM_IDLE_ABORT_MS`: stream idle time before the SDK turn is aborted, default `900000`
 - `UPLOAD_DIR`: directory for Telegram image inputs downloaded before sending them to Codex, default `./state/uploads`
@@ -174,6 +175,12 @@ the watchdog would abort the turn, the bot first checks the matching
 `CODEX_SESSIONS_DIR` rollout JSONL. When it finds an agent message plus
 `task_complete`, it sends that final answer and records the recovery instead of
 starting duplicate work.
+
+Startup recovery turns also poll the same backfill source while the stream is
+idle. By default `BOT_RECOVERY_BACKFILL_POLL_MS=30000`, so a completed recovery
+turn can be picked up around the next 30 second check instead of waiting for the
+hard idle abort. This poller is recovery-only; normal user turns still rely on
+the regular stream and watchdog path.
 
 `CODEX_TRANSPORT=app-server` is optional. It uses:
 
