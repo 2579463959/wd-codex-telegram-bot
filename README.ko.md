@@ -72,9 +72,13 @@ cp .env.minimal.example .env
 - `ALLOWED_THREAD_IDS`: 선택값. 양수 forum topic/thread id를 쉼표로 구분합니다. 설정하면 해당 forum topic/thread id에서만 허용됩니다.
 - `CODEX_WORKDIR`: 기본값은 `$HOME`
 - `CODEX_PATH`: Codex 실행 파일, 기본값은 `codex`. Codex가 `PATH`에 없다면 명시적으로 지정하세요.
-- `CODEX_TRANSPORT`: `sdk` 또는 `app-server`, 기본값 `sdk`. 일반 설치는 `sdk`를 권장합니다. Codex app-server daemon/proxy와 `thread/read` 기반 recovery가 필요할 때만 `app-server`를 사용하세요.
-- `CODEX_APP_SERVER_AUTOSTART`: `CODEX_TRANSPORT=app-server`일 때 연결 전에 local app-server daemon을 시작할지 여부, 기본값 `true`
-- `CODEX_APP_SERVER_CONNECT_TIMEOUT_MS`: app-server daemon start/version check timeout, 기본값 `5000`
+- `CODEX_TRANSPORT`: `sdk` 또는 `app-server-direct`, 기본값 `sdk`. 일반 설치는 `sdk`를 권장합니다. `app-server-direct`는 설치된 Codex CLI가 direct `app-server --stdio`를 지원할 때만 사용하세요.
+- `CODEX_WORKER_MODE`: `sidecar` 또는 `inline`, 기본값 `sidecar`. `sidecar`는 Codex turn을 `codex-telegram-worker`에서 실행하고, `inline`은 기존 단일 프로세스 fallback입니다.
+- `CODEX_WORKER_STATE_DIR`: worker job state와 event log 디렉터리, 기본값 `./state/worker`
+- `CODEX_WORKER_SOCKET`: bot이 worker와 통신하는 Unix socket, 기본값 `CODEX_WORKER_STATE_DIR/worker.sock`
+- `CODEX_WORKER_CONNECT_TIMEOUT_MS`: worker RPC timeout, 기본값 `5000`
+- `CODEX_WORKER_EVENT_POLL_MS`: bot이 worker job event를 확인하는 간격, 기본값 `1000`
+- `CODEX_APP_SERVER_DIRECT_TIMEOUT_MS`: 선택적 direct app-server 요청 timeout, 기본값 `5000`
 - `CODEX_SESSIONS_DIR`: 기본값은 `$CODEX_HOME/sessions`
 - `CODEX_MODELS_CACHE_FILE`: Telegram 모델 버튼에 쓰는 Codex 모델 cache, 기본값은 `$CODEX_HOME/models_cache.json`
 - `CODEX_BASE_URL`, `CODEX_API_KEY`, `CODEX_CONFIG_JSON`, `CODEX_ENV_JSON`: 선택적 `Codex` SDK 생성자 설정
@@ -141,9 +145,10 @@ cp .env.minimal.example .env
 - `SNAPSHOT_RETENTION_DAYS`: backup/snapshot 보관 일수, 기본값 `14`
 - `LOGS_MAX_LINES`: `/logs`로 보낼 최대 줄 수, 기본값 `80`
 
-실행합니다.
+sidecar 모드에서는 두 프로세스를 실행합니다.
 
 ```bash
+npm run start:worker
 npm start
 ```
 
@@ -153,42 +158,46 @@ npm start
 npm run verify
 ```
 
-## Codex Transport와 Recovery
+## Codex Worker, Transport, Recovery
 
-기본 transport는 계속 `CODEX_TRANSPORT=sdk`입니다. 이 모드에서는
-`@openai/codex-sdk`가 Codex CLI의 experimental JSON stream을 실행합니다.
-별도 app-server daemon이 필요 없어서 일반 설치에는 이 모드를 권장합니다.
+기본 런타임은 `CODEX_WORKER_MODE=sidecar`와 `CODEX_TRANSPORT=sdk`입니다.
+이 모드에서는 `codex-telegram-worker`가 Codex turn 실행을 소유하고,
+job별 JSONL event log를 영속적으로 기록합니다. Telegram bot은 Telegram update,
+메뉴, 응답 전송, delivery cursor만 담당합니다.
 
-SDK 모드의 stream recovery도 강화되어 있습니다. JSON event stream이 idle
-상태가 되어 watchdog이 turn을 abort하기 전에, bot은 먼저
-`CODEX_SESSIONS_DIR` 아래의 해당 rollout JSONL을 확인합니다. agent message와
-`task_complete`가 함께 있으면 같은 작업을 다시 시작하지 않고 해당 final
-answer를 Telegram으로 보내고 recovery 기록을 남깁니다.
+이 분리가 bot 재시작 복구의 핵심입니다. `codex-telegram-bot.service`가 turn
+실행 중 재시작되어도 worker는 Codex stream을 계속 유지합니다. bot은 startup
+후 worker에 다시 연결해 저장된 cursor 이후 event를 재생하고 final answer 또는
+failure message를 전송합니다.
 
-startup recovery turn은 stream이 조용한 동안 같은 backfill source를 주기적으로
-확인합니다. 기본값은 `BOT_RECOVERY_BACKFILL_POLL_MS=30000`이므로 recovery turn이
-완료됐는데 SDK stream 후속 이벤트가 오지 않는 경우에도 hard idle abort까지
-기다리지 않고 다음 30초 체크에서 회수할 수 있습니다. 이 poller는 recovery
-전용이며, 일반 사용자 turn은 기존 stream/watchdog 경로를 그대로 사용합니다.
+SDK stream backfill은 fallback으로 계속 유지됩니다. SDK stream이 idle 상태가
+되거나 worker 자체에 연결할 수 없으면, recovery가 `CODEX_SESSIONS_DIR`의 해당
+rollout JSONL에서 agent message와 `task_complete`를 확인해 이미 완료된 작업을
+중복 시작하지 않도록 합니다.
 
-`CODEX_TRANSPORT=app-server`는 선택 기능입니다. 이 모드는 다음을 사용합니다.
+`CODEX_WORKER_MODE=inline`은 개발/비상 fallback입니다. inline 모드에서는 bot이
+Codex를 직접 실행하므로 bot process가 재시작되면 active stream도 함께 끊깁니다.
 
-- `CODEX_APP_SERVER_AUTOSTART=true`일 때 `codex app-server daemon start`
-- JSON-RPC 통신용 `codex app-server proxy`
-- `thread/start`, `thread/resume`, `turn/start`, `thread/read`
+`CODEX_TRANSPORT=app-server-direct`는 선택 기능입니다. worker가 아래 direct stdio
+child process를 시작합니다.
 
-이 모드는 `threadId`로 실행 중인 app-server thread에 다시 붙을 수 있고,
-`thread/read`로 완료된 turn을 읽을 수 있습니다. daemon 기반 recovery에는 더
-강하지만 운영해야 할 local Codex process가 하나 늘어납니다. `daemon bootstrap`
-은 bot이 실행하지 않으며 operator가 직접 수행할 작업으로 남겨둡니다.
+```bash
+codex app-server --stdio
+```
+
+app-server daemon, daemon autostart, daemon version check, proxy process는 더 이상
+사용하지 않습니다. 공개 설치의 기본 `sdk` transport는 일반 Codex CLI/SDK 경로만
+필요합니다. `app-server-direct`는 설치된 Codex CLI가 호환되는 direct stdio
+app-server를 제공할 때만 사용하세요.
 
 Telegram 조작 경로:
 
 - `/settings` -> `Runtime` -> `Codex`를 엽니다.
-- `SDK`, `app-server`, `Default` 중 하나를 선택합니다.
-- `Autostart`를 켜거나 끕니다.
-- `Test app-server`로 daemon start/check를 명시적으로 실행합니다.
-- transport를 바꾼 뒤 `Save & restart`로 현재 service에 반영합니다.
+- worker mode를 `sidecar`, `inline`, `Default` 중에서 선택합니다.
+- transport를 `SDK`, `app-server direct`, `Default` 중에서 선택합니다.
+- `Test worker`로 sidecar socket을 확인합니다.
+- `Test app-server direct`로 direct app-server CLI 지원 여부를 확인합니다.
+- worker mode나 transport를 바꾼 뒤 `Save & restart`로 반영합니다.
 
 ## GitHub 자동화
 
@@ -310,15 +319,15 @@ Codex가 inbound Telegram 메시지를 처리하는 동안 같은 chat에 추가
 
 - output: reaction, answer format, completion notice delay, maximum message length, log output line count, progress edit interval
 - queue: pending turn limit, pending turn expiry
-- Codex: transport, app-server autostart, app-server connection timeout, app-server status check, save-and-restart
+- Codex: worker mode, worker poll interval, transport, app-server direct timeout, worker/app-server status check, save-and-restart
 - live progress: mode와 interval, chat별 source/delete control
 - cleanup: enable/disable, notify time, retention, quarantine, approval TTL
 - snapshots: enable/disable, notify time, retention
 - UI: language, time zone, locale
 
 Secret, token, 절대경로, process-level Codex constructor value는 계속 `.env`에 둡니다.
-Transport 변경은 bot state에 저장되지만, SDK와 app-server 사이를 전환한 뒤에는
-running process를 restart해 반영하는 것을 권장합니다.
+Worker mode와 transport 변경은 bot state에 저장되지만, 변경 후에는 running
+service를 restart해 반영하는 것을 권장합니다.
 
 ## Session Cleanup
 
@@ -344,14 +353,17 @@ running process를 restart해 반영하는 것을 권장합니다.
 ```bash
 mkdir -p ~/.config/systemd/user
 cp ~/codex-telegram-bot/systemd/codex-telegram-bot.service ~/.config/systemd/user/
+cp ~/codex-telegram-bot/systemd/codex-telegram-worker.service ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now codex-telegram-bot.service
+systemctl --user enable --now codex-telegram-worker.service codex-telegram-bot.service
+systemctl --user status codex-telegram-worker.service
 systemctl --user status codex-telegram-bot.service
 ```
 
 로그 확인:
 
 ```bash
+journalctl --user -u codex-telegram-worker.service -f
 journalctl --user -u codex-telegram-bot.service -f
 ```
 

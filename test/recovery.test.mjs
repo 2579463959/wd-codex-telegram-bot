@@ -98,6 +98,10 @@ test("restart marker captures eligible active turn candidates", async () => {
     chatId: 100,
     threadId: "thread-1",
     inputPreview: "continue work",
+    workerJobId: "job-1",
+    workerEventSeq: 12,
+    workerMode: "sidecar",
+    workerTransport: "sdk",
     recoveryEligible: true,
     lastEventAt: "2026-06-15T00:00:00.000Z"
   });
@@ -115,6 +119,10 @@ test("restart marker captures eligible active turn candidates", async () => {
   assert.equal(marker.restartId, "rst_test");
   assert.equal(marker.recoveries.length, 1);
   assert.equal(marker.recoveries[0].chatKey, "chat-1");
+  assert.equal(marker.recoveries[0].workerJobId, "job-1");
+  assert.equal(marker.recoveries[0].workerEventSeq, 12);
+  assert.equal(marker.recoveries[0].workerMode, "sidecar");
+  assert.equal(marker.recoveries[0].workerTransport, "sdk");
 });
 
 test("startup plan filters stale and repeated recovery candidates", async () => {

@@ -11,14 +11,11 @@ import process from "node:process";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { Codex } from "@openai/codex-sdk";
 import { Telegraf } from "telegraf";
 import { bootstrapBot } from "./app/bootstrap.js";
 import {
+  appServerDirectArgs,
   appServerThreadReadEvents,
-  createAppServerThread,
-  ensureAppServerDaemonStarted,
-  getAppServerDaemonVersion,
   readAppServerThread
 } from "./codex/app_server.js";
 import { buildInput, mergeReplyContext } from "./codex/input.js";
@@ -27,7 +24,13 @@ import { buildStyleInstructionPrompt } from "./codex/prompts.js";
 import { readCodexSessionBackfill } from "./codex/session_backfill.js";
 import { applyCodexStreamEvent, codexStreamItems, codexStreamResult, createCodexStreamState } from "./codex/stream.js";
 import { createCodexStreamWatchdog, isStreamIdleTimeout, STREAM_IDLE_TIMEOUT_MESSAGE } from "./codex/watchdog.js";
-import { analyzeContextPressure, buildCodexCompactConfig, resolveAutoCompactTokenLimit } from "./codex/compact.js";
+import { analyzeContextPressure, resolveAutoCompactTokenLimit } from "./codex/compact.js";
+import {
+  CODEX_TRANSPORT_APP_SERVER_DIRECT,
+  CODEX_TRANSPORT_SDK,
+  createCodexThread as createCodexThreadForTransport,
+  threadTransport as detectThreadTransport
+} from "./codex/thread_factory.js";
 import { readConfig as readRuntimeConfig } from "./config.js";
 import { renderHandoffMarkdown, sanitizeHandoffFilename, sessionHighlightFromItem } from "./handoff.js";
 import { LANGUAGE_CHOICES, TELEGRAM_LANGUAGE_CODES, VALID_LANGUAGES, textFor } from "./i18n.js";
@@ -105,6 +108,7 @@ import {
 import { startRecoveryBackfillPoller } from "./recovery/backfill_poller.js";
 import { booleanOptionKeyboardRows } from "./ui/keyboards.js";
 import { formatSettingPanelHtml } from "./ui/panels.js";
+import { createWorkerClient } from "./worker/client.js";
 
 const execFileAsync = promisify(execFile);
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -116,7 +120,8 @@ const VALID = {
   reasoning: new Set(["minimal", "low", "medium", "high", "xhigh"]),
   serviceTier: new Set(["fast", "flex"]),
   webSearch: new Set(["disabled", "cached", "live"]),
-  codexTransport: new Set(["sdk", "app-server"]),
+  codexTransport: new Set([CODEX_TRANSPORT_SDK, CODEX_TRANSPORT_APP_SERVER_DIRECT]),
+  codexWorkerMode: new Set(["sidecar", "inline"]),
   queueMode: new Set(["safe", "interrupt", "side"]),
   language: VALID_LANGUAGES,
   liveProgressSource: new Set(["agent", "activity", "both"]),
@@ -263,6 +268,7 @@ const pendingTurns = new Map();
 const codexClients = new Map();
 const sideTurns = new Map();
 const usageRefreshes = new Map();
+let workerClient = null;
 let startupRecoveryRunning = false;
 const restartController = createRestartController({
   activeTurns,
@@ -746,6 +752,11 @@ async function handleStopCommand(ctx) {
   if (active) {
     active.stopRequested = true;
     await markActiveTurnStopped(chatKey);
+    if (active.workerJobId) {
+      getWorkerClient().cancelJob(active.workerJobId).catch((error) => {
+        console.warn("worker cancel failed:", error instanceof Error ? error.message : String(error));
+      });
+    }
     active.abortController?.abort();
   }
   const cleared = await clearPendingTurns(chatKey);
@@ -1324,13 +1335,9 @@ async function processPreparedTurn(chatKey, preparedTurn, active) {
   }, 4500);
 
   try {
-    const input = buildInput(preparedTurn.inputText, preparedTurn.imagePaths);
-    const thread = getOrCreateThread(chatKey);
-    await maybeNotifyContextPressure(ctx, chatKey, thread);
-    const turn = await runCodexTurn(ctx, chatKey, thread, input, active.abortController.signal, undefined, liveProgress, {
-      turnKind: preparedTurn.kind || "user"
-    });
-    await rememberThread(chatKey, thread);
+    const { turn, threadId } = useWorkerSidecar()
+      ? await processPreparedTurnViaWorker(ctx, chatKey, preparedTurn, active, liveProgress)
+      : await processPreparedTurnInline(ctx, chatKey, preparedTurn, active, liveProgress);
     const response = formatTurn(turn);
     const replyText = response || "Codex completed without a final message.";
     await recordTelegramReplyStarted(chatKey, replyText);
@@ -1341,7 +1348,7 @@ async function processPreparedTurn(chatKey, preparedTurn, active) {
       await recordTelegramReplyFailed(chatKey, error);
       throw error;
     }
-    await recordActiveTurnCompleted(chatKey, thread.id || getChatState(chatKey).threadId || "");
+    await recordActiveTurnCompleted(chatKey, threadId || getChatState(chatKey).threadId || "");
     turnSucceeded = true;
     finalReaction = config.telegramCompleteReaction;
   } catch (error) {
@@ -1362,6 +1369,203 @@ async function processPreparedTurn(chatKey, preparedTurn, active) {
     clearInterval(typingInterval);
     await reactQuietly(ctx, finalReaction, finalReaction === config.telegramCompleteReaction);
   }
+}
+
+async function processPreparedTurnInline(ctx, chatKey, preparedTurn, active, liveProgress) {
+  const input = buildInput(preparedTurn.inputText, preparedTurn.imagePaths);
+  const thread = getOrCreateThread(chatKey);
+  await maybeNotifyContextPressure(ctx, chatKey, thread);
+  const turn = await runCodexTurn(ctx, chatKey, thread, input, active.abortController.signal, undefined, liveProgress, {
+    turnKind: preparedTurn.kind || "user"
+  });
+  await rememberThread(chatKey, thread);
+  return { turn, threadId: thread.id || getChatState(chatKey).threadId || "" };
+}
+
+async function processPreparedTurnViaWorker(ctx, chatKey, preparedTurn, active, liveProgress) {
+  const client = getWorkerClient();
+  const job = createWorkerJobPayload(chatKey, preparedTurn);
+  await maybeNotifyContextPressure(ctx, chatKey, { id: job.threadId });
+  const started = await client.startJob(job);
+  active.workerJobId = started.jobId;
+  active.workerEventSeq = workerDeliveryCursor(chatKey, started.jobId);
+  await recordWorkerJobStarted(chatKey, { ...job, id: started.jobId });
+
+  const cancelWorker = () => {
+    client.cancelJob(started.jobId).catch((error) => {
+      console.warn("worker cancel failed:", error instanceof Error ? error.message : String(error));
+    });
+  };
+  if (active.abortController.signal.aborted) cancelWorker();
+  else active.abortController.signal.addEventListener("abort", cancelWorker, { once: true });
+
+  try {
+    return await waitForWorkerJob(ctx, chatKey, started.jobId, active, liveProgress, {
+      turnKind: preparedTurn.kind || "user"
+    });
+  } finally {
+    active.abortController.signal.removeEventListener("abort", cancelWorker);
+  }
+}
+
+function createWorkerJobPayload(chatKey, preparedTurn) {
+  const chat = getChatState(chatKey);
+  const effectiveOptions = getEffectiveOptions(chatKey);
+  return {
+    id: preparedTurn.id || createQueueItemId(),
+    chatKey,
+    chatId: preparedTurn.chatId ?? chatKey,
+    chatType: preparedTurn.chatType,
+    messageThreadId: preparedTurn.messageThreadId,
+    replyToMessageId: preparedTurn.replyToMessageId,
+    originMessageId: preparedTurn.originMessageId,
+    originUpdateId: preparedTurn.originUpdateId,
+    kind: preparedTurn.kind || "user",
+    text: preparedTurn.text || "",
+    inputText: preparedTurn.inputText || preparedTurn.text || "",
+    imagePaths: preparedTurn.imagePaths || [],
+    threadId: preparedTurn.recovery?.threadId || chat.threadId || "",
+    effectiveOptions,
+    outputSchema: chat.outputSchema || null,
+    transport: codexTransport(),
+    enqueuedAt: preparedTurn.enqueuedAt || new Date().toISOString(),
+    recovery: preparedTurn.recovery || null
+  };
+}
+
+async function waitForWorkerJob(ctx, chatKey, jobId, active, liveProgress, options = {}) {
+  const client = getWorkerClient();
+  const streamStartedAt = Date.now();
+  const streamState = createCodexStreamState();
+  const progressState = liveProgress;
+  let cursor = Number.isFinite(Number(options.afterSeq)) ? Number(options.afterSeq) : workerDeliveryCursor(chatKey, jobId);
+  let firstItemSeen = false;
+  let terminal = null;
+  let threadId = getChatState(chatKey).threadId || "";
+  let streamOutcome = "completed";
+  await recordCodexStreamStarted(chatKey, options.turnKind || "user");
+
+  try {
+    while (!terminal) {
+      if (active.abortController?.signal?.aborted) {
+        await client.cancelJob(jobId).catch(() => {});
+      }
+
+      const response = await client.readJobEvents(jobId, cursor);
+      const events = response.events || [];
+      if (events.length === 0) {
+        const status = await client.getJobStatus(jobId).catch(() => null);
+        const job = status?.job || null;
+        if (isTerminalWorkerStatus(job?.status)) {
+          if (cursor > 0 && codexStreamItems(streamState).length === 0) {
+            cursor = 0;
+            continue;
+          }
+          terminal = { type: `worker.job.${job.status}`, status: job.status, message: job.error || "" };
+          break;
+        }
+        await sleep(runtimeValue("codexWorkerEventPollMs"));
+        continue;
+      }
+
+      for (const event of events) {
+        const seq = Number(event.seq || cursor);
+        cursor = Number.isFinite(seq) ? Math.max(cursor, seq) : cursor;
+        active.workerEventSeq = cursor;
+        await recordWorkerDeliveryCursor(chatKey, jobId, cursor);
+
+        const eventType = String(event.type || "");
+        if (event.threadId) threadId = event.threadId;
+        if (eventType.startsWith("worker.job.")) {
+          if (isTerminalWorkerEvent(event)) terminal = event;
+          continue;
+        }
+
+        const update = applyCodexStreamEvent(streamState, event);
+        if (update.type === "thread_started") {
+          threadId = update.threadId || threadId;
+          const chat = getChatState(chatKey);
+          chat.threadId = threadId;
+          chat.updatedAt = new Date().toISOString();
+          await saveState(config.stateFile, state);
+          await recordThreadStarted(chatKey, threadId);
+        } else if (update.type === "item") {
+          await recordStreamItemEvent(chatKey, event, update);
+          if (!firstItemSeen) {
+            firstItemSeen = true;
+            await recordCodexStreamFirstItem(chatKey, event, update, Date.now() - streamStartedAt);
+          }
+          if (update.finalResponseChanged) {
+            await recordCodexStreamFinalResponseSeen(chatKey, streamState.finalResponse.length, Date.now() - streamStartedAt);
+          }
+        } else if (update.type === "error") {
+          streamOutcome = "error";
+          await recordActiveTurnFailed(chatKey, update.message);
+          throw new Error(update.message);
+        } else if (update.type === "turn_completed") {
+          await appendRecoveryEvent({ type: "turn_completed", chatKey, threadId });
+        } else if (update.type === "unknown") {
+          await recordCodexStreamUnknownEvent(chatKey, event, Date.now() - streamStartedAt);
+        }
+        await maybeSendLiveProgress(ctx, progressState, event, codexStreamItems(streamState));
+      }
+    }
+
+    if (terminal?.type === "worker.job.failed") {
+      streamOutcome = "error";
+      throw new Error(terminal.message || "Codex worker job failed.");
+    }
+    if (terminal?.type === "worker.job.cancelled") {
+      streamOutcome = "cancelled";
+      throw new Error(terminal.message || "Codex worker job was cancelled.");
+    }
+    return { turn: codexStreamResult(streamState), threadId };
+  } finally {
+    await recordCodexStreamIteratorClosed(chatKey, {
+      elapsedMs: Date.now() - streamStartedAt,
+      outcome: streamOutcome,
+      itemCount: codexStreamItems(streamState).length,
+      finalResponseLength: streamState.finalResponse.length
+    });
+  }
+}
+
+function workerDeliveryKey(chatKey, jobId) {
+  return `${chatKey}:${jobId}`;
+}
+
+function workerDeliveryCursor(chatKey, jobId) {
+  const entry = state.worker?.deliveries?.[workerDeliveryKey(chatKey, jobId)];
+  return Number(entry?.seq || 0);
+}
+
+async function recordWorkerDeliveryCursor(chatKey, jobId, seq) {
+  if (!state.worker || typeof state.worker !== "object") state.worker = { deliveries: {} };
+  if (!state.worker.deliveries || typeof state.worker.deliveries !== "object") state.worker.deliveries = {};
+  state.worker.deliveries[workerDeliveryKey(chatKey, jobId)] = {
+    seq: Number(seq || 0),
+    updatedAt: new Date().toISOString()
+  };
+  await saveState(config.stateFile, state);
+  if (!config.botRestartRecoveryEnabled) return;
+  await safeRecoveryWrite(async () => {
+    await upsertActiveTurnSnapshot(config.botRecoveryDir, chatKey, {
+      workerJobId: jobId,
+      workerEventSeq: Number(seq || 0),
+      lastEventAt: new Date().toISOString(),
+      lastKnownStatus: "worker_event_delivered"
+    });
+  });
+}
+
+function isTerminalWorkerEvent(event) {
+  return event?.type === "worker.job.completed"
+    || event?.type === "worker.job.failed"
+    || event?.type === "worker.job.cancelled";
+}
+
+function isTerminalWorkerStatus(status) {
+  return status === "completed" || status === "failed" || status === "cancelled";
 }
 
 async function runCodexTurn(ctx, chatKey, thread, input, signal, workingMessageId, liveProgress = null, options = {}) {
@@ -1551,13 +1755,12 @@ async function tryBackfillCompletedStream(chatKey, thread, streamState, { sinceM
 }
 
 async function readBackfillEventsForThread(thread, threadId, { sinceMs = 0 } = {}) {
-  if (threadTransport(thread) === "app-server" || codexTransport() === "app-server") {
+  if (threadTransport(thread) === CODEX_TRANSPORT_APP_SERVER_DIRECT || codexTransport() === CODEX_TRANSPORT_APP_SERVER_DIRECT) {
     const response = await readAppServerThread({
       threadId,
       codexPath: config.codexPath,
       codexEnv: config.codexEnv,
-      autostart: runtimeValue("codexAppServerAutostart"),
-      connectTimeoutMs: runtimeValue("codexAppServerConnectTimeoutMs"),
+      connectTimeoutMs: runtimeValue("codexAppServerDirectTimeoutMs"),
       includeTurns: true
     });
     return appServerThreadReadEvents(response, { threadId });
@@ -1610,17 +1813,6 @@ async function waitForLatestTokenCount(threadId) {
   return null;
 }
 
-function buildCodexOptions(serviceTier = "") {
-  const options = { codexPathOverride: config.codexPath };
-  if (config.codexBaseUrl) options.baseUrl = config.codexBaseUrl;
-  if (config.codexApiKey) options.apiKey = config.codexApiKey;
-  const codexConfig = { ...(config.codexConfig ?? {}), ...buildCodexCompactConfig(config) };
-  if (serviceTier) codexConfig.service_tier = serviceTier;
-  if (Object.keys(codexConfig).length > 0) options.config = codexConfig;
-  if (config.codexEnv) options.env = config.codexEnv;
-  return options;
-}
-
 async function maybeNotifyContextPressure(ctx, chatKey, thread) {
   if (!config.codexContextGuardEnabled) return;
   const threadId = thread?.id || getChatState(chatKey).threadId;
@@ -1669,6 +1861,35 @@ async function recordActiveTurnStarted(chatKey, turn) {
   await safeRecoveryWrite(async () => {
     await upsertActiveTurnSnapshot(config.botRecoveryDir, chatKey, snapshot);
     await appendRecoveryEvent({ type: "turn_started", chatKey, queueItemId: turn.id || "", recoveryEligible: snapshot.recoveryEligible });
+  });
+}
+
+async function recordWorkerJobStarted(chatKey, job) {
+  const now = new Date().toISOString();
+  const chat = getChatState(chatKey);
+  if (job.threadId) {
+    chat.threadId = job.threadId;
+    chat.updatedAt = now;
+    await saveState(config.stateFile, state);
+  }
+  if (!config.botRestartRecoveryEnabled) return;
+  await safeRecoveryWrite(async () => {
+    await upsertActiveTurnSnapshot(config.botRecoveryDir, chatKey, {
+      threadId: job.threadId || chat.threadId || "",
+      workerJobId: job.id || "",
+      workerEventSeq: workerDeliveryCursor(chatKey, job.id || ""),
+      workerMode: codexWorkerMode(),
+      workerTransport: job.transport || codexTransport(),
+      lastEventAt: now,
+      lastKnownStatus: "worker_job_started"
+    });
+    await appendRecoveryEvent({
+      type: "worker_job_started",
+      chatKey,
+      jobId: job.id || "",
+      threadId: job.threadId || chat.threadId || "",
+      transport: job.transport || codexTransport()
+    });
   });
 }
 
@@ -1907,17 +2128,21 @@ function digestText(text) {
   return `sha256:${createHash("sha256").update(String(text)).digest("hex")}`;
 }
 
-function getCodexClient(chatKey) {
-  const serviceTier = getEffectiveOptions(chatKey).serviceTier || "";
-  const cacheKey = serviceTier || "default";
-  if (!codexClients.has(cacheKey)) {
-    codexClients.set(cacheKey, new Codex(buildCodexOptions(serviceTier)));
-  }
-  return codexClients.get(cacheKey);
-}
-
 function codexTransport() {
   return runtimeValue("codexTransport");
+}
+
+function codexWorkerMode() {
+  return runtimeValue("codexWorkerMode");
+}
+
+function useWorkerSidecar() {
+  return codexWorkerMode() === "sidecar";
+}
+
+function getWorkerClient() {
+  if (!workerClient) workerClient = createWorkerClient(config);
+  return workerClient;
 }
 
 function startCodexThread(chatKey) {
@@ -1929,23 +2154,20 @@ function resumeCodexThread(chatKey, threadId) {
 }
 
 function createCodexThread(chatKey, threadId = "") {
-  if (codexTransport() === "app-server") {
-    return createAppServerThread({
-      threadId,
-      threadOptions: buildAppServerThreadOptions(chatKey),
-      codexPath: config.codexPath,
-      codexEnv: config.codexEnv,
-      autostart: runtimeValue("codexAppServerAutostart"),
-      connectTimeoutMs: runtimeValue("codexAppServerConnectTimeoutMs")
-    });
-  }
-  return threadId
-    ? getCodexClient(chatKey).resumeThread(threadId, buildThreadOptions(chatKey))
-    : getCodexClient(chatKey).startThread(buildThreadOptions(chatKey));
+  return createCodexThreadForTransport({
+    transport: codexTransport(),
+    threadId,
+    effectiveOptions: getEffectiveOptions(chatKey),
+    config: {
+      ...config,
+      codexAppServerDirectTimeoutMs: runtimeValue("codexAppServerDirectTimeoutMs")
+    },
+    codexClients
+  });
 }
 
 function threadTransport(thread) {
-  return thread?.transport === "app-server" ? "app-server" : "sdk";
+  return detectThreadTransport(thread);
 }
 
 function defaultChatOptions() {
@@ -1967,24 +2189,6 @@ function defaultChatOptions() {
   const additionalDirectories = mergeAdditionalDirectories(config.codexAdditionalDirectories, config.uploadDir);
   if (additionalDirectories.length > 0) options.additionalDirectories = additionalDirectories;
   return options;
-}
-
-function buildThreadOptions(chatKey) {
-  const threadOptions = { ...getEffectiveOptions(chatKey) };
-  for (const key of ["streamEvents", "serviceTier", "liveProgressEnabled", "liveProgressSource", "liveProgressDeletePolicy"]) {
-    delete threadOptions[key];
-  }
-  return threadOptions;
-}
-
-function buildAppServerThreadOptions(chatKey) {
-  const threadOptions = { ...getEffectiveOptions(chatKey) };
-  for (const key of ["streamEvents", "liveProgressEnabled", "liveProgressSource", "liveProgressDeletePolicy"]) {
-    delete threadOptions[key];
-  }
-  const codexConfig = { ...(config.codexConfig ?? {}), ...buildCodexCompactConfig(config) };
-  if (Object.keys(codexConfig).length > 0) threadOptions.codexConfig = codexConfig;
-  return threadOptions;
 }
 
 function buildTurnOptions(chatKey, signal) {
@@ -2302,6 +2506,7 @@ function startPersistedQueues() {
 async function startRecoveryScheduler() {
   if (!config.botRestartRecoveryEnabled) return;
   await ensureRecoveryDir(config.botRecoveryDir);
+  if (useWorkerSidecar()) await checkWorkerStartupStatus();
   await scheduleStartupRecovery({ source: "startup" });
 }
 
@@ -2362,6 +2567,7 @@ async function scheduleStartupRecovery({ force = false, notifyCtx = null, source
   startupRecoveryRunning = true;
   let started = 0;
   try {
+    if (useWorkerSidecar()) started += await recoverActiveWorkerJobs({ source });
     const plan = await buildStartupRecoveryPlan(config.botRecoveryDir, {
       maxAgeSeconds: force ? 0 : config.botRecoveryStaleSeconds,
       suspendAfter: force ? Number.POSITIVE_INFINITY : config.botRecoverySuspendAfter,
@@ -2421,6 +2627,134 @@ async function scheduleStartupRecovery({ force = false, notifyCtx = null, source
     startupRecoveryRunning = false;
   }
   return started > 0;
+}
+
+async function recoverActiveWorkerJobs({ source = "startup" } = {}) {
+  const snapshots = await readActiveTurnSnapshots(config.botRecoveryDir);
+  const entries = Object.entries(snapshots.turns ?? {})
+    .filter(([, snapshot]) => snapshot?.workerJobId && snapshot?.recoveryEligible !== false);
+  if (entries.length === 0) return 0;
+
+  let started = 0;
+  for (const [chatKey, snapshot] of entries) {
+    if (activeTurns.has(chatKey)) continue;
+    const jobId = String(snapshot.workerJobId || "");
+    try {
+      await getWorkerClient().getJobStatus(jobId);
+    } catch (error) {
+      await appendRecoveryEvent({
+        type: "worker_recovery_unavailable",
+        chatKey,
+        jobId,
+        source,
+        message: truncate(error instanceof Error ? error.message : String(error), 500)
+      });
+      continue;
+    }
+
+    const turn = createWorkerRecoveryTurn(chatKey, snapshot);
+    const ctx = createSyntheticCtx(turn);
+    const active = {
+      abortController: new AbortController(),
+      currentPreparedTurn: turn,
+      currentQueueItemId: turn.id || "",
+      currentText: turn.text || "",
+      currentTurnStartedAt: snapshot.startedAt || new Date().toISOString(),
+      lastProgress: "",
+      lastProgressAt: "",
+      recoveryEligible: false,
+      workerJobId: jobId,
+      workerEventSeq: Number(snapshot.workerEventSeq || 0)
+    };
+    activeTurns.set(chatKey, active);
+    const liveProgress = createLiveProgressState(active);
+    liveProgress.chatKey = chatKey;
+    started += 1;
+
+    resumeWorkerJobRecovery(ctx, chatKey, jobId, active, liveProgress, source).catch((error) => {
+      console.warn("worker recovery failed:", error instanceof Error ? error.message : String(error));
+    });
+  }
+  return started;
+}
+
+async function checkWorkerStartupStatus() {
+  try {
+    const status = await getWorkerClient().status();
+    await appendRecoveryEvent({
+      type: "worker_startup_status",
+      status: status.status || "ok",
+      activeJobs: status.activeJobs?.length ?? 0,
+      runningJobs: status.runningJobIds?.length ?? 0
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await appendRecoveryEvent({ type: "worker_startup_status_failed", message: truncate(message, 500) });
+    console.warn("worker startup status check failed:", message);
+  }
+}
+
+async function resumeWorkerJobRecovery(ctx, chatKey, jobId, active, liveProgress, source) {
+  await appendRecoveryEvent({ type: "worker_recovery_started", chatKey, jobId, source });
+  let finalReaction = "";
+  try {
+    const { turn, threadId } = await waitForWorkerJob(ctx, chatKey, jobId, active, liveProgress, {
+      afterSeq: 0,
+      turnKind: "recovery"
+    });
+    const response = formatTurn(turn);
+    if (response) {
+      await recordTelegramReplyStarted(chatKey, response);
+      try {
+        await replyCodexAnswer(ctx, response);
+        await recordTelegramReplyCompleted(chatKey, response);
+      } catch (error) {
+        await recordTelegramReplyFailed(chatKey, error);
+        throw error;
+      }
+    }
+    await recordActiveTurnCompleted(chatKey, threadId || getChatState(chatKey).threadId || "");
+    await appendRecoveryEvent({ type: "worker_recovery_completed", chatKey, jobId, threadId: threadId || "" });
+    finalReaction = config.telegramCompleteReaction;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await recordActiveTurnFailed(chatKey, message);
+    await replyHtml(ctx, `${b(t("recoveryStartFailedTitle"))}\n${t("recoveryStartFailedDetail")}\n${code(message)}`).catch(() => {});
+    await appendRecoveryEvent({ type: "worker_recovery_failed", chatKey, jobId, message: truncate(message, 500) });
+    finalReaction = active.abortController.signal.aborted ? config.telegramStoppedReaction : config.telegramErrorReaction;
+  } finally {
+    if (shouldDeleteLiveProgress(liveProgress, finalReaction === config.telegramCompleteReaction)) {
+      await deleteTrackedProgressMessages(ctx, liveProgress);
+    }
+    await reactQuietly(ctx, finalReaction, finalReaction === config.telegramCompleteReaction);
+    activeTurns.delete(chatKey);
+  }
+}
+
+function createWorkerRecoveryTurn(chatKey, snapshot) {
+  return {
+    id: snapshot.queueItemId || `worker-recovery-${snapshot.workerJobId || Date.now()}`,
+    chatKey,
+    chatId: snapshot.chatId ?? chatKey,
+    chatType: snapshot.chatType,
+    messageThreadId: snapshot.messageThreadId,
+    replyToMessageId: snapshot.replyToMessageId,
+    originMessageId: snapshot.originMessageId,
+    originUpdateId: snapshot.originUpdateId,
+    kind: "recovery",
+    text: snapshot.inputPreview || "",
+    inputText: "",
+    imagePaths: [],
+    recovery: {
+      chatKey,
+      threadId: snapshot.threadId || "",
+      recoveryKey: snapshot.recoveryKey || "",
+      startedAt: snapshot.startedAt || "",
+      lastEventAt: snapshot.lastEventAt || "",
+      workerJobId: snapshot.workerJobId || "",
+      workerEventSeq: Number(snapshot.workerEventSeq || 0)
+    }
+  };
 }
 
 async function tryCompleteRecoveryFromBackfill(ctx, turn) {
@@ -2736,6 +3070,11 @@ function normalizeState(parsed) {
         ? stateValue.maintenance.autoHandoffEnabled
         : config.codexMaintenanceAutoHandoffEnabled
     },
+    worker: {
+      deliveries: stateValue.worker?.deliveries && typeof stateValue.worker.deliveries === "object"
+        ? stateValue.worker.deliveries
+        : {}
+    },
     snapshots: {
       lastDailyDate: stateValue.snapshots?.lastDailyDate ?? ""
     }
@@ -2768,19 +3107,22 @@ function setRuntimeValue(target, key, rawValue) {
     return;
   }
   const value = String(rawValue).trim();
-  if (key === "telegramReactionsEnabled" || key === "telegramLiveProgressEnabled" || key === "cleanupEnabled" || key === "snapshotEnabled" || key === "codexAppServerAutostart") {
+  if (key === "telegramReactionsEnabled" || key === "telegramLiveProgressEnabled" || key === "cleanupEnabled" || key === "snapshotEnabled") {
     target[key] = parseRequiredBoolean(value, key);
   } else if (key === "telegramFormatCodexAnswers") {
     target[key] = parseCodexAnswerFormat(value);
   } else if (key === "codexTransport") {
-    if (!VALID.codexTransport.has(value)) throw new Error("codexTransport must be sdk or app-server.");
+    if (!VALID.codexTransport.has(value)) throw new Error("codexTransport must be sdk or app-server-direct.");
+    target[key] = value;
+  } else if (key === "codexWorkerMode") {
+    if (!VALID.codexWorkerMode.has(value)) throw new Error("codexWorkerMode must be sidecar or inline.");
     target[key] = value;
   } else if (key === "telegramLiveProgressMode") {
     if (!["brief", "korean-brief"].includes(value)) throw new Error("telegramLiveProgressMode must be brief or korean-brief.");
     target[key] = value;
   } else if (key === "cleanupNotifyTime" || key === "snapshotNotifyTime") {
     target[key] = parseTimeOfDay(value);
-  } else if (key === "telegramCompletionNoticeSeconds" || key === "telegramPendingTurnsMax" || key === "telegramPendingTurnMaxAgeSeconds" || key === "cleanupRetentionDays" || key === "cleanupQuarantineDays" || key === "cleanupPlanTtlHours" || key === "snapshotRetentionDays" || key === "logsMaxLines" || key === "maxTelegramChars" || key === "codexAppServerConnectTimeoutMs") {
+  } else if (key === "telegramCompletionNoticeSeconds" || key === "telegramPendingTurnsMax" || key === "telegramPendingTurnMaxAgeSeconds" || key === "cleanupRetentionDays" || key === "cleanupQuarantineDays" || key === "cleanupPlanTtlHours" || key === "snapshotRetentionDays" || key === "logsMaxLines" || key === "maxTelegramChars" || key === "codexAppServerDirectTimeoutMs" || key === "codexWorkerConnectTimeoutMs" || key === "codexWorkerEventPollMs") {
     target[key] = parseStrictNonnegativeInteger(value, key);
   } else if (key === "telegramLiveProgressIntervalMs" || key === "progressEditIntervalMs") {
     const parsed = parseStrictNonnegativeInteger(value, key);
@@ -2793,9 +3135,11 @@ function setRuntimeValue(target, key, rawValue) {
 async function updateRuntimeSetting(key, rawValue) {
   if (!state.runtime || typeof state.runtime !== "object") state.runtime = {};
   const previousTransport = codexTransport();
+  const previousWorkerMode = codexWorkerMode();
   const value = String(rawValue || "").replaceAll("_", ":");
   setRuntimeValue(state.runtime, key, value);
   if (key === "codexTransport" && codexTransport() !== previousTransport) threadCache.clear();
+  if (key === "codexWorkerMode" && codexWorkerMode() !== previousWorkerMode) threadCache.clear();
   await saveState(config.stateFile, state);
 }
 
@@ -4091,8 +4435,8 @@ function runtimePanelHtml() {
 
 function runtimeSummaryHtml() {
   return formatKeyValueHtml("Runtime overrides:", [
+    ["worker mode", runtimeValue("codexWorkerMode")],
     ["codex transport", runtimeValue("codexTransport")],
-    ["app-server autostart", runtimeValue("codexAppServerAutostart")],
     ["reactions", runtimeValue("telegramReactionsEnabled")],
     ["answer format", runtimeValue("telegramFormatCodexAnswers")],
     ["completion notice", `${runtimeValue("telegramCompletionNoticeSeconds")}s`],
@@ -4126,9 +4470,11 @@ function runtimeQueuePanelHtml() {
 
 function runtimeCodexPanelHtml() {
   return formatKeyValueHtml("Codex runtime:", [
+    ["worker mode", runtimeValue("codexWorkerMode")],
+    ["worker socket", config.codexWorkerSocket],
+    ["worker poll", `${runtimeValue("codexWorkerEventPollMs")}ms`],
     ["transport", runtimeValue("codexTransport")],
-    ["app-server autostart", runtimeValue("codexAppServerAutostart")],
-    ["app-server connect timeout", `${runtimeValue("codexAppServerConnectTimeoutMs")}ms`],
+    ["app-server direct timeout", `${runtimeValue("codexAppServerDirectTimeoutMs")}ms`],
     ["codex path", config.codexPath]
   ]);
 }
@@ -4429,14 +4775,19 @@ function runtimeQueueKeyboard() {
 function runtimeCodexKeyboard() {
   return inlineKeyboard([
     [
+      { text: "Sidecar", callback_data: "set:runtime_workermode:sidecar" },
+      { text: "Inline", callback_data: "set:runtime_workermode:inline" },
+      { text: t("default"), callback_data: "set:runtime_workermode:default" }
+    ],
+    [
       { text: "SDK", callback_data: "set:runtime_codextransport:sdk" },
-      { text: "app-server", callback_data: "set:runtime_codextransport:app-server" },
+      { text: "app-server direct", callback_data: "set:runtime_codextransport:app-server-direct" },
       { text: t("default"), callback_data: "set:runtime_codextransport:default" }
     ],
     [
-      { text: "Autostart on", callback_data: "set:runtime_appserverautostart:on" },
-      { text: "off", callback_data: "set:runtime_appserverautostart:off" },
-      { text: t("default"), callback_data: "set:runtime_appserverautostart:default" }
+      { text: "Worker poll 1s", callback_data: "set:runtime_workerpoll:1000" },
+      { text: "3s", callback_data: "set:runtime_workerpoll:3000" },
+      { text: t("default"), callback_data: "set:runtime_workerpoll:default" }
     ],
     [
       { text: "Timeout 3s", callback_data: "set:runtime_appservertimeout:3000" },
@@ -4445,7 +4796,10 @@ function runtimeCodexKeyboard() {
       { text: t("default"), callback_data: "set:runtime_appservertimeout:default" }
     ],
     [
-      { text: "Test app-server", callback_data: "tool:appserver_status" },
+      { text: "Test worker", callback_data: "tool:worker_status" },
+      { text: "Test app-server direct", callback_data: "tool:appserver_status" }
+    ],
+    [
       { text: "Save & restart", callback_data: "act:restart" }
     ],
     [{ text: t("runtime"), callback_data: "p:settings_runtime" }, { text: t("settings"), callback_data: "p:settings" }]
@@ -4796,9 +5150,10 @@ function runtimeSettingKey(actionKey) {
     runtime_completionnotice: "telegramCompletionNoticeSeconds",
     runtime_pendingmax: "telegramPendingTurnsMax",
     runtime_pendingage: "telegramPendingTurnMaxAgeSeconds",
+    runtime_workermode: "codexWorkerMode",
+    runtime_workerpoll: "codexWorkerEventPollMs",
     runtime_codextransport: "codexTransport",
-    runtime_appserverautostart: "codexAppServerAutostart",
-    runtime_appservertimeout: "codexAppServerConnectTimeoutMs",
+    runtime_appservertimeout: "codexAppServerDirectTimeoutMs",
     runtime_liveprogressmode: "telegramLiveProgressMode",
     runtime_liveprogressinterval: "telegramLiveProgressIntervalMs",
     runtime_cleanup: "cleanupEnabled",
@@ -4827,31 +5182,37 @@ function runtimeSettingValue(actionKey, value) {
 async function handleAppServerStatusButton(ctx) {
   const rows = [
     ["transport", runtimeValue("codexTransport")],
-    ["autostart", runtimeValue("codexAppServerAutostart")]
+    ["direct args", appServerDirectArgs().join(" ")],
+    ["timeout", `${runtimeValue("codexAppServerDirectTimeoutMs")}ms`]
   ];
   try {
-    if (runtimeValue("codexAppServerAutostart")) {
-      await ensureAppServerDaemonStarted({
-        codexPath: config.codexPath,
-        codexEnv: config.codexEnv,
-        timeoutMs: runtimeValue("codexAppServerConnectTimeoutMs")
-      });
-      rows.push(["daemon start", "ok"]);
-    } else {
-      rows.push(["daemon start", "skipped"]);
-    }
-    const version = await getAppServerDaemonVersion({
-      codexPath: config.codexPath,
-      codexEnv: config.codexEnv,
-      timeoutMs: runtimeValue("codexAppServerConnectTimeoutMs")
-    });
-    rows.push(["daemon version", version?.running_app_server_version || version?.app_server_version || "running"]);
-    rows.push(["cli version", version?.cli_version || "unknown"]);
+    const result = await readCommandOutput(config.codexPath, ["app-server", "--help"], runtimeValue("codexAppServerDirectTimeoutMs"));
+    const supportsStdio = result.ok && result.output.includes("--stdio");
+    rows.push(["status", result.ok ? (supportsStdio ? "available" : "unsupported") : "failed"]);
+    rows.push(["help", supportsStdio ? truncate(result.output, 120) : truncate(result.output || result.error || "missing --stdio support", 180)]);
   } catch (error) {
     rows.push(["status", "failed"]);
     rows.push(["error", truncate(error instanceof Error ? error.message : String(error), 240)]);
   }
-  await editOrReplyHtml(ctx, formatKeyValueHtml("Codex app-server:", rows), runtimeCodexKeyboard());
+  await editOrReplyHtml(ctx, formatKeyValueHtml("Codex app-server direct:", rows), runtimeCodexKeyboard());
+}
+
+async function handleWorkerStatusButton(ctx) {
+  const rows = [
+    ["worker mode", runtimeValue("codexWorkerMode")],
+    ["socket", config.codexWorkerSocket],
+    ["poll", `${runtimeValue("codexWorkerEventPollMs")}ms`]
+  ];
+  try {
+    const status = await getWorkerClient().status();
+    rows.push(["status", status.status || "ok"]);
+    rows.push(["active jobs", status.activeJobs?.length ?? 0]);
+    rows.push(["running jobs", status.runningJobIds?.length ?? 0]);
+  } catch (error) {
+    rows.push(["status", "failed"]);
+    rows.push(["error", truncate(error instanceof Error ? error.message : String(error), 240)]);
+  }
+  await editOrReplyHtml(ctx, formatKeyValueHtml("Codex worker:", rows), runtimeCodexKeyboard());
 }
 
 async function handleToolButton(ctx, action) {
@@ -4870,6 +5231,8 @@ async function handleToolButton(ctx, action) {
     await editOrReplyHtml(ctx, formatConfigHtml(), withToolsBack());
   } else if (action === "appserver_status") {
     await handleAppServerStatusButton(ctx);
+  } else if (action === "worker_status") {
+    await handleWorkerStatusButton(ctx);
   } else if (action === "backup") {
     const backup = await createStateBackup("manual");
     await replyHtml(ctx, formatKeyValueHtml("Backup created:", [
@@ -5189,10 +5552,12 @@ function formatHandoffResultHtml(result) {
 
 function formatConfigHtml() {
   return formatKeyValueHtml("Codex runtime config:", [
+    ["worker mode", runtimeValue("codexWorkerMode")],
+    ["worker socket", config.codexWorkerSocket],
+    ["worker event poll", `${runtimeValue("codexWorkerEventPollMs")}ms`],
     ["transport", runtimeValue("codexTransport")],
     ["codexPathOverride", config.codexPath],
-    ["app-server autostart", runtimeValue("codexAppServerAutostart")],
-    ["app-server connect timeout", `${runtimeValue("codexAppServerConnectTimeoutMs")}ms`],
+    ["app-server direct timeout", `${runtimeValue("codexAppServerDirectTimeoutMs")}ms`],
     ["baseUrl", config.codexBaseUrl || "default"],
     ["apiKey", config.codexApiKey ? "set" : "default auth"],
     ["config", config.codexConfig ? "set" : "none"],
@@ -5604,8 +5969,10 @@ async function formatDoctorHtml(chatKey) {
     ["current model", options.model || "default"],
     ["current thinking", options.modelReasoningEffort],
     ["current serviceTier", options.serviceTier || "default"],
+    ["worker mode", runtimeValue("codexWorkerMode")],
+    ["worker socket", config.codexWorkerSocket],
     ["codex transport", runtimeValue("codexTransport")],
-    ["app-server autostart", runtimeValue("codexAppServerAutostart")],
+    ["app-server direct timeout", `${runtimeValue("codexAppServerDirectTimeoutMs")}ms`],
     ["recovery backfill poll", config.botRecoveryBackfillPollMs > 0 ? `${config.botRecoveryBackfillPollMs}ms` : "off"],
     ["upgrade smoke test", "/status -> /model -> /fast_status -> message -> /new -> /resume_last"]
   ];
@@ -5614,16 +5981,18 @@ async function formatDoctorHtml(chatKey) {
 
 async function formatHealthHtml() {
   const memory = process.memoryUsage();
-  const [stateCheck, backupCheck, workdirDisk, stateDisk, serviceStatus, uploadPlan] = await Promise.all([
+  const [stateCheck, backupCheck, workdirDisk, stateDisk, serviceStatus, workerServiceStatus, uploadPlan] = await Promise.all([
     checkStateReadWrite(),
     checkDirectoryWritable(config.backupDir),
     getDiskSummary(config.codexWorkdir),
     getDiskSummary(path.dirname(config.stateFile)),
     readCommandOutput("systemctl", ["--user", "is-active", "codex-telegram-bot.service"], 3000),
+    readCommandOutput("systemctl", ["--user", "is-active", "codex-telegram-worker.service"], 3000),
     createUploadCleanupPlan({ dryRun: true }).catch(() => null)
   ]);
   return formatKeyValueHtml("Bot health:", [
     ["service", serviceStatus.ok ? serviceStatus.output : "unknown"],
+    ["worker service", workerServiceStatus.ok ? workerServiceStatus.output : "unknown"],
     ["uptime", formatDurationSeconds(process.uptime())],
     ["memory rss", formatBytes(memory.rss)],
     ["memory heap", `${formatBytes(memory.heapUsed)} / ${formatBytes(memory.heapTotal)}`],

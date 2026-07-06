@@ -2,6 +2,157 @@
 
 All notable public changes are documented here.
 
+## 1.2.0 - 2026-07-06
+
+### Added
+
+- Added `codex-telegram-worker` sidecar mode as the default runtime. The worker
+  owns Codex turn execution, stores durable per-job JSONL events, and lets the
+  Telegram bot reconnect and replay job events after a bot-only restart.
+- Added worker IPC over a Unix socket with `worker/status`, `job/start`,
+  `job/status`, `job/events`, and `job/cancel`.
+- Added `CODEX_WORKER_MODE`, `CODEX_WORKER_STATE_DIR`, `CODEX_WORKER_SOCKET`,
+  `CODEX_WORKER_CONNECT_TIMEOUT_MS`, and `CODEX_WORKER_EVENT_POLL_MS`.
+- Added `CODEX_TRANSPORT=app-server-direct` as an optional direct stdio
+  app-server transport using `codex app-server --stdio`.
+- Added `systemd/codex-telegram-worker.service` and connected the bot service
+  to it with `Wants=`/`After=`.
+- Added SDK recovery stream watchdog and session backfill polling so restart
+  recovery can detect missed completed output instead of timing out silently.
+
+### Fixed
+
+- Removed app-server daemon/proxy runtime usage, including daemon autostart and
+  proxy checks. Public installs now continue to work with the default SDK
+  transport without standalone app-server setup.
+- Changed `bin/codex-yolo` to prefer the repository-local Codex CLI at
+  `node_modules/.bin/codex` before falling back to the globally installed
+  `codex` command. This keeps Telegram runtime behavior aligned with the
+  package-lock version used by `@openai/codex-sdk`, instead of accidentally
+  running an older global CLI after package upgrades.
+- Preserved the existing `CODEX_REAL_PATH` override, so operators can still
+  point the wrapper at a custom Codex executable when debugging or testing a
+  specific CLI build.
+- Added a regression test that executes `bin/codex-yolo --version` and compares
+  it with `node_modules/.bin/codex --version`, proving the wrapper resolves to
+  the package-local CLI in normal installs.
+- Changed the planned restart service signal from `SIGUSR1` to `SIGUSR2`.
+  Runtime smoke testing showed that sending `SIGUSR1` to the Node process
+  starts the Node inspector and does not restart the bot, so the recovery
+  restart path now uses
+  `systemctl --user kill -s SIGUSR2 codex-telegram-bot.service`.
+- Registered process signal handlers before directory setup, Telegram launch,
+  and startup recovery scheduling. This reduces the window where an early
+  systemd signal could hit Node's default signal behavior instead of the bot's
+  planned restart handler.
+- Cleared restart markers that contain no recovery candidates after startup
+  planning. This prevents a planned restart with no active Codex turn from
+  leaving a stale `state/recovery/restart-marker.json` behind.
+- Moved startup recovery scheduling before Telegram polling launch, so restart
+  markers can be inspected and cleared even when `bot.launch()` is slow to
+  resolve in the service environment.
+- Made direct `SIGTERM` shutdown exit explicitly after best-effort recovery
+  marker flushing and Telegram stop, preventing `systemctl --user restart
+  codex-telegram-bot.service` from waiting until systemd's stop timeout and
+  escalating to `SIGKILL`.
+- Made direct `SIGTERM` shutdown also consider persisted active-turn snapshots
+  when deciding whether to write an `external_sigterm` recovery marker, so
+  recovery work is preserved even if the in-memory active-turn map is not
+  available during shutdown.
+- Made `/recovery_cancel` clear queued recovery turns as well as the restart
+  marker, while preserving normal user queue items.
+- Added Telegram `/restart` redelivery dedupe using the Telegram `update_id`
+  stored in recovery dedupe state, so the same delivered update cannot schedule
+  the same planned restart twice.
+- Added recovery failure warning tracking. When the same recovery key fails
+  twice, the dedupe entry is marked with `warning: true` and the recovery
+  journal records `recovery_failure_warning`.
+- Added a startup recovery action planner that converts fresh startup recovery
+  candidates into recovery queue turns, skips candidates whose chat is already
+  active, and makes stale-marker cleanup explicit.
+- Applied recovery turn thread ids to the persisted chat state before Codex
+  resumes a recovery turn, and cleared mismatched cached threads so recovery
+  uses the saved thread id instead of starting from the wrong cached session.
+- Recorded startup recovery Telegram notice delivery as
+  `recovery_startup_notice_sent` or `recovery_startup_notice_failed` in the
+  recovery journal, including restart id, chat, topic, and message id metadata.
+- Extracted Telegram `/restart` command handling into a focused helper so
+  restart scheduling, Telegram update dedupe, scheduled replies, pending queue
+  preservation, and topic notify metadata can be regression-tested without a
+  live Telegram user client.
+- Cleared stale restart markers when startup planning finds only stale recovery
+  candidates and no fresh or suspended work remains, while recording
+  `restart_marker_cleared_stale` in the recovery journal.
+- Extracted direct shutdown handling so `SIGTERM` best-effort marker creation,
+  ordinary no-active-turn shutdown, marker write failure logging, Telegram stop,
+  and process exit are covered by focused tests.
+- Suppressed stale restart marker candidates when a newer active-turn snapshot
+  for the same chat/thread is no longer recovery-eligible, preventing stopped
+  worker turns from spawning duplicate legacy recovery jobs after restart.
+- Made worker cancellation idempotent in the Telegram runtime, so `/stop` and
+  abort listeners do not send duplicate `job/cancel` RPCs for the same active
+  turn.
+- Treated cancelled worker recovery as stopped recovery instead of reporting a
+  misleading "restart recovery failed to start" Telegram notice.
+- Serialized worker job-state writes and made atomic temporary filenames unique,
+  preventing duplicate event sequence numbers and `ENOENT` rename races during
+  concurrent worker event writes.
+
+### Verification
+
+- Confirmed the local dependency tree resolves both `@openai/codex-sdk` and
+  `@openai/codex` to `0.142.5` after reinstalling from `package-lock.json`.
+- Confirmed `bin/codex-yolo --version` reports the same Codex CLI version as
+  the package-local binary.
+- Confirmed `systemctl --user kill -s SIGUSR1 codex-telegram-bot.service`
+  leaves the bot PID unchanged and starts the Node inspector, so `SIGUSR1` is
+  not a valid operational restart signal for this service.
+- Confirmed the bootstrap signal tests cover `SIGUSR2` registration and dispatch
+  through the supplied signal handler.
+- Added a recovery startup test proving empty restart markers are deleted and
+  recorded in the recovery journal.
+- Added a recovery state test proving a `thread.started` update preserves the
+  active snapshot thread id and completed turns remove the snapshot.
+- Added a queue test proving recovery queue items can be removed without
+  dropping normal queued user turns.
+- Added a recovery dedupe test proving restart `update_id` values are persisted
+  and repeated Telegram deliveries are recognized.
+- Extended recovery dedupe tests to verify second-failure warning tracking and
+  the matching recovery journal entry.
+- Added startup recovery action tests for marker-to-recovery-turn creation,
+  active-chat skipping, stale-marker cleanup, and queue ordering that keeps new
+  user turns behind recovery turns during the startup gate.
+- Added direct shutdown tests for active-turn `SIGTERM` marker creation,
+  no-active-turn ordinary shutdown, and marker write failure logging before
+  process exit.
+- Added direct shutdown coverage for the persisted-snapshot SIGTERM marker
+  path.
+- Added a Telegram context test proving persisted pending queue metadata is
+  hydrated back into topic-aware synthetic message and reply options after
+  restart.
+- Added restart command tests for active-turn-absent `/restart`, pending queue
+  preservation during `/restart`, duplicate update suppression, and Telegram
+  topic notify routing.
+- Added a recovery startup test proving recovery turn thread ids are applied to
+  chat state before Codex resume selection.
+- Confirmed runtime smoke exposed the old direct `systemctl restart` timeout
+  behavior, which is now fixed by explicit `SIGTERM` process exit.
+- Confirmed the focused package binary test passes with
+  `node --test test/package_bin.test.mjs`.
+- Added worker protocol/store/server/executor tests, app-server-direct tests,
+  config tests for sidecar defaults, recovery snapshot worker metadata tests,
+  and package-bin coverage for `codex-telegram-worker`.
+- Added regression tests for stale restart marker suppression after stopped
+  worker turns and for serialized concurrent worker event appends.
+- Confirmed `npm run verify` passes, including syntax checks, locale validation,
+  ESLint, Prettier package/workflow checks, the full Node test suite, and
+  `npm audit --audit-level=moderate`.
+- Confirmed service-level E2E bot-only restart recovery with both a completed
+  worker event log replay and a live worker job that continued through a
+  running command, delivered the final Telegram reply, recorded
+  `worker_recovery_completed`, removed the active snapshot, and left no restart
+  marker behind.
+
 ## 1.1.6 - 2026-07-06
 
 ### Added

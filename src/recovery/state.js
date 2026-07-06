@@ -142,6 +142,10 @@ export function recoveryCandidateFromSnapshot(snapshot, reason = "self_restart")
     workingDirectory: snapshot.workingDirectory || "",
     startedAt: snapshot.startedAt || "",
     lastEventAt: snapshot.lastEventAt || "",
+    workerJobId: snapshot.workerJobId || "",
+    workerEventSeq: Number(snapshot.workerEventSeq || 0),
+    workerMode: snapshot.workerMode || "",
+    workerTransport: snapshot.workerTransport || "",
     recoveryKey: recoveryKey({ chatKey: snapshot.chatKey, threadId: snapshot.threadId || "", reason })
   };
 }

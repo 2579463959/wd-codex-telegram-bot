@@ -10,7 +10,8 @@ const CONFIG_VALID = {
   sandbox: new Set(["read-only", "workspace-write", "danger-full-access"]),
   reasoning: new Set(["minimal", "low", "medium", "high", "xhigh"]),
   webSearch: new Set(["disabled", "cached", "live"]),
-  codexTransport: new Set(["sdk", "app-server"]),
+  codexTransport: new Set(["sdk", "app-server-direct"]),
+  codexWorkerMode: new Set(["sidecar", "inline"]),
   compactStrength: new Set(["default", "light", "balanced", "aggressive"]),
   liveProgressSource: new Set(["agent", "activity", "both"]),
   liveProgressDeletePolicy: new Set(["always", "on_success", "never"])
@@ -42,13 +43,16 @@ export function readConfig(env = process.env, options = {}) {
   const codexReasoningEffort = env.CODEX_REASONING_EFFORT?.trim() || "medium";
   const codexWebSearch = env.CODEX_WEB_SEARCH?.trim() || "disabled";
   const codexTransport = env.CODEX_TRANSPORT?.trim() || "sdk";
+  const codexWorkerMode = env.CODEX_WORKER_MODE?.trim() || "sidecar";
   assertEnum(codexApprovalPolicy, CONFIG_VALID.approval, "CODEX_APPROVAL_POLICY");
   assertEnum(codexSandboxMode, CONFIG_VALID.sandbox, "CODEX_SANDBOX_MODE");
   assertEnum(codexReasoningEffort, CONFIG_VALID.reasoning, "CODEX_REASONING_EFFORT");
   assertEnum(codexWebSearch, CONFIG_VALID.webSearch, "CODEX_WEB_SEARCH");
   assertEnum(codexTransport, CONFIG_VALID.codexTransport, "CODEX_TRANSPORT");
+  assertEnum(codexWorkerMode, CONFIG_VALID.codexWorkerMode, "CODEX_WORKER_MODE");
 
   const cleanupNotifyChatIds = parseTelegramIdCsv(env.CLEANUP_NOTIFY_CHAT_IDS, "CLEANUP_NOTIFY_CHAT_IDS", { allowNegative: true });
+  const workerStateDir = env.CODEX_WORKER_STATE_DIR?.trim() || path.join(stateRoot, "worker");
 
   return {
     telegramBotToken,
@@ -58,8 +62,12 @@ export function readConfig(env = process.env, options = {}) {
     codexWorkdir: env.CODEX_WORKDIR?.trim() || homeDir,
     codexPath: env.CODEX_PATH?.trim() || "codex",
     codexTransport,
-    codexAppServerAutostart: parseOptionalBoolean(env.CODEX_APP_SERVER_AUTOSTART) ?? true,
-    codexAppServerConnectTimeoutMs: parseNonnegativeInteger(env.CODEX_APP_SERVER_CONNECT_TIMEOUT_MS, 5000, "CODEX_APP_SERVER_CONNECT_TIMEOUT_MS"),
+    codexAppServerDirectTimeoutMs: parseNonnegativeInteger(env.CODEX_APP_SERVER_DIRECT_TIMEOUT_MS, 5000, "CODEX_APP_SERVER_DIRECT_TIMEOUT_MS"),
+    codexWorkerMode,
+    codexWorkerStateDir: workerStateDir,
+    codexWorkerSocket: env.CODEX_WORKER_SOCKET?.trim() || path.join(workerStateDir, "worker.sock"),
+    codexWorkerConnectTimeoutMs: parseNonnegativeInteger(env.CODEX_WORKER_CONNECT_TIMEOUT_MS, 5000, "CODEX_WORKER_CONNECT_TIMEOUT_MS"),
+    codexWorkerEventPollMs: parseNonnegativeInteger(env.CODEX_WORKER_EVENT_POLL_MS, 1000, "CODEX_WORKER_EVENT_POLL_MS"),
     codexModel: env.CODEX_MODEL?.trim() || "",
     codexApprovalPolicy,
     codexSandboxMode,

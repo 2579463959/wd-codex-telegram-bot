@@ -1,17 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appServerThreadReadEvents, createAppServerThread } from "../src/codex/app_server.js";
+import { appServerDirectArgs, appServerThreadReadEvents, createAppServerThread } from "../src/codex/app_server.js";
 
 test("createAppServerThread exposes an SDK-like thread shape", () => {
   const thread = createAppServerThread({
     threadId: "thread-1",
-    threadOptions: { workingDirectory: "/repo" },
-    autostart: false
+    threadOptions: { workingDirectory: "/repo" }
   });
-  assert.equal(thread.transport, "app-server");
+  assert.equal(thread.transport, "app-server-direct");
   assert.equal(thread.id, "thread-1");
   assert.equal(typeof thread.run, "function");
   assert.equal(typeof thread.runStreamed, "function");
+});
+
+test("appServerDirectArgs uses direct stdio without daemon or proxy", () => {
+  assert.deepEqual(appServerDirectArgs(), ["app-server", "--stdio"]);
 });
 
 test("appServerThreadReadEvents converts completed turns into stream notifications", () => {

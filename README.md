@@ -82,9 +82,13 @@ Edit `.env`:
 - `ALLOWED_THREAD_IDS`: optional comma-separated positive forum topic/thread ids. When set, authorized users are accepted only in these threads.
 - `CODEX_WORKDIR`: defaults to `$HOME`
 - `CODEX_PATH`: Codex executable, default `codex`. Set this explicitly if Codex is not on `PATH`.
-- `CODEX_TRANSPORT`: `sdk` or `app-server`, default `sdk`. Keep `sdk` for the simplest setup. Use `app-server` only when you want Codex app-server daemon/proxy semantics and `thread/read` recovery.
-- `CODEX_APP_SERVER_AUTOSTART`: when `CODEX_TRANSPORT=app-server`, start the local app-server daemon before connecting, default `true`
-- `CODEX_APP_SERVER_CONNECT_TIMEOUT_MS`: timeout for app-server daemon start/version checks, default `5000`
+- `CODEX_TRANSPORT`: `sdk` or `app-server-direct`, default `sdk`. Keep `sdk` for normal installs. Use `app-server-direct` only when your Codex CLI supports direct `app-server --stdio`.
+- `CODEX_WORKER_MODE`: `sidecar` or `inline`, default `sidecar`. `sidecar` runs Codex turns in `codex-telegram-worker`; `inline` keeps the old single-process fallback.
+- `CODEX_WORKER_STATE_DIR`: worker job state and event log directory, default `./state/worker`
+- `CODEX_WORKER_SOCKET`: Unix socket used by the bot to talk to the worker, default `CODEX_WORKER_STATE_DIR/worker.sock`
+- `CODEX_WORKER_CONNECT_TIMEOUT_MS`: worker RPC timeout, default `5000`
+- `CODEX_WORKER_EVENT_POLL_MS`: bot polling interval for worker job events, default `1000`
+- `CODEX_APP_SERVER_DIRECT_TIMEOUT_MS`: timeout for optional direct app-server requests, default `5000`
 - `CODEX_SESSIONS_DIR`: defaults to `$CODEX_HOME/sessions`
 - `CODEX_MODELS_CACHE_FILE`: Codex model cache used by Telegram model buttons, default `$CODEX_HOME/models_cache.json`
 - `CODEX_BASE_URL`, `CODEX_API_KEY`, `CODEX_CONFIG_JSON`, `CODEX_ENV_JSON`: optional `Codex` SDK constructor settings
@@ -151,9 +155,10 @@ Edit `.env`:
 - `SNAPSHOT_RETENTION_DAYS`: backup/snapshot retention in days, default `14`
 - `LOGS_MAX_LINES`: maximum `/logs` lines returned to Telegram, default `80`
 
-Then run:
+Then run both processes in sidecar mode:
 
 ```bash
+npm run start:worker
 npm start
 ```
 
@@ -163,43 +168,47 @@ For local release-style verification, run:
 npm run verify
 ```
 
-## Codex Transport and Recovery
+## Codex Worker, Transport, and Recovery
 
-The default transport is still `CODEX_TRANSPORT=sdk`. In this mode the bot uses
-`@openai/codex-sdk`, which runs Codex CLI with experimental JSON streaming. This
-is the recommended mode for normal installs because it does not require a
-separate app-server daemon.
+The default runtime is `CODEX_WORKER_MODE=sidecar` with
+`CODEX_TRANSPORT=sdk`. In this mode `codex-telegram-worker` owns Codex turn
+execution and writes a durable per-job JSONL event log. The Telegram bot owns
+Telegram updates, menus, replies, and delivery cursors.
 
-Stream recovery is hardened in SDK mode: if the JSON event stream goes idle and
-the watchdog would abort the turn, the bot first checks the matching
-`CODEX_SESSIONS_DIR` rollout JSONL. When it finds an agent message plus
-`task_complete`, it sends that final answer and records the recovery instead of
-starting duplicate work.
+This split is the primary bot restart recovery mechanism. If
+`codex-telegram-bot.service` restarts while a turn is running, the worker keeps
+the Codex stream alive. On startup, the bot reconnects to the worker, replays
+events after the saved cursor, and sends the final answer or failure message.
 
-Startup recovery turns also poll the same backfill source while the stream is
-idle. By default `BOT_RECOVERY_BACKFILL_POLL_MS=30000`, so a completed recovery
-turn can be picked up around the next 30 second check instead of waiting for the
-hard idle abort. This poller is recovery-only; normal user turns still rely on
-the regular stream and watchdog path.
+SDK stream backfill is still kept as a fallback. If the SDK stream goes idle or
+the worker itself is unavailable, recovery can still inspect the matching
+`CODEX_SESSIONS_DIR` rollout JSONL for an agent message plus `task_complete`.
+This fallback avoids starting duplicate work when Codex already completed.
 
-`CODEX_TRANSPORT=app-server` is optional. It uses:
+`CODEX_WORKER_MODE=inline` is a development and emergency fallback. In inline
+mode the bot executes Codex directly, so a bot process restart also interrupts
+the active stream.
 
-- `codex app-server daemon start` when `CODEX_APP_SERVER_AUTOSTART=true`
-- `codex app-server proxy` for JSON-RPC communication
-- `thread/start`, `thread/resume`, `turn/start`, and `thread/read`
+`CODEX_TRANSPORT=app-server-direct` is optional. The worker starts a direct
+stdio child process with:
 
-This mode can rejoin a running app-server thread by `threadId` and can read
-completed turns via `thread/read`. It is more robust for daemon-backed recovery,
-but it adds another local Codex process to operate. Do not run `daemon bootstrap`
-from the bot; bootstrap remains an operator action.
+```bash
+codex app-server --stdio
+```
+
+There is no app-server daemon, daemon autostart, daemon version check, or proxy
+process. Public installs only need the regular Codex CLI/SDK path for the
+default `sdk` transport. Use `app-server-direct` only when the installed Codex
+CLI provides compatible direct stdio app-server support.
 
 Telegram controls:
 
 - Open `/settings` -> `Runtime` -> `Codex`
-- Choose `SDK`, `app-server`, or `Default`
-- Toggle `Autostart`
-- Use `Test app-server` to start/check the daemon explicitly
-- Use `Save & restart` to apply a transport change to the running service
+- Choose worker mode: `sidecar`, `inline`, or `Default`
+- Choose transport: `SDK`, `app-server direct`, or `Default`
+- Use `Test worker` to check the sidecar socket
+- Use `Test app-server direct` to check direct app-server CLI support
+- Use `Save & restart` after changing worker mode or transport
 
 Use `/whoami` in the target chat or forum topic to confirm your Telegram user
 id, chat id, and thread id before tightening `ALLOWED_CHAT_IDS` or
@@ -403,15 +412,15 @@ Menu-managed runtime settings include:
 - output: reactions, answer format, completion notice delay, maximum message
   length, log output line count, and progress edit interval
 - queue: pending turn limit and pending turn expiry
-- Codex: transport, app-server autostart, app-server connection timeout, app-server status check, and save-and-restart
+- Codex: worker mode, worker poll interval, transport, app-server direct timeout, worker/app-server status checks, and save-and-restart
 - live progress: mode and interval, plus per-chat source/delete controls
 - cleanup: enable/disable, notify time, retention, quarantine, and approval TTL
 - snapshots: enable/disable, notify time, and retention
 - UI: language, time zone, and locale
 
 Secrets, tokens, absolute paths, and process-level Codex constructor values
-still belong in `.env`. Transport changes are saved in bot state, but the
-running process should be restarted after switching between SDK and app-server.
+still belong in `.env`. Worker mode and transport changes are saved in bot
+state, but the running services should be restarted after switching them.
 
 ## Session Cleanup
 
@@ -453,14 +462,17 @@ the environment values on first startup.
 ```bash
 mkdir -p ~/.config/systemd/user
 cp ~/codex-telegram-bot/systemd/codex-telegram-bot.service ~/.config/systemd/user/
+cp ~/codex-telegram-bot/systemd/codex-telegram-worker.service ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now codex-telegram-bot.service
+systemctl --user enable --now codex-telegram-worker.service codex-telegram-bot.service
+systemctl --user status codex-telegram-worker.service
 systemctl --user status codex-telegram-bot.service
 ```
 
 Logs:
 
 ```bash
+journalctl --user -u codex-telegram-worker.service -f
 journalctl --user -u codex-telegram-bot.service -f
 ```
 

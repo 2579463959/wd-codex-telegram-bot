@@ -24,8 +24,12 @@ test("readConfig applies stable defaults from env and options", () => {
   assert.equal(config.codexHome, "/home/tester/.codex");
   assert.equal(config.codexSessionsDir, "/home/tester/.codex/sessions");
   assert.equal(config.codexTransport, "sdk");
-  assert.equal(config.codexAppServerAutostart, true);
-  assert.equal(config.codexAppServerConnectTimeoutMs, 5000);
+  assert.equal(config.codexWorkerMode, "sidecar");
+  assert.equal(config.codexWorkerStateDir, "/app/state/worker");
+  assert.equal(config.codexWorkerSocket, "/app/state/worker/worker.sock");
+  assert.equal(config.codexWorkerConnectTimeoutMs, 5000);
+  assert.equal(config.codexWorkerEventPollMs, 1000);
+  assert.equal(config.codexAppServerDirectTimeoutMs, 5000);
   assert.equal(config.stateFile, "/app/state/threads.json");
   assert.equal(config.telegramFormatCodexAnswers, "markdown");
   assert.equal(config.telegramPendingTurnsMax, 10);
@@ -75,15 +79,23 @@ test("readConfig parses restart recovery env values", () => {
   assert.equal(config.codexStreamIdleAbortMs, 2000);
 });
 
-test("readConfig parses Codex transport env values", () => {
+test("readConfig parses Codex transport and worker env values", () => {
   const config = readTestConfig({
-    CODEX_TRANSPORT: "app-server",
-    CODEX_APP_SERVER_AUTOSTART: "off",
-    CODEX_APP_SERVER_CONNECT_TIMEOUT_MS: "12000"
+    CODEX_TRANSPORT: "app-server-direct",
+    CODEX_WORKER_MODE: "inline",
+    CODEX_WORKER_STATE_DIR: "/tmp/worker",
+    CODEX_WORKER_SOCKET: "/tmp/codex-worker.sock",
+    CODEX_WORKER_CONNECT_TIMEOUT_MS: "7000",
+    CODEX_WORKER_EVENT_POLL_MS: "1500",
+    CODEX_APP_SERVER_DIRECT_TIMEOUT_MS: "12000"
   });
-  assert.equal(config.codexTransport, "app-server");
-  assert.equal(config.codexAppServerAutostart, false);
-  assert.equal(config.codexAppServerConnectTimeoutMs, 12000);
+  assert.equal(config.codexTransport, "app-server-direct");
+  assert.equal(config.codexWorkerMode, "inline");
+  assert.equal(config.codexWorkerStateDir, "/tmp/worker");
+  assert.equal(config.codexWorkerSocket, "/tmp/codex-worker.sock");
+  assert.equal(config.codexWorkerConnectTimeoutMs, 7000);
+  assert.equal(config.codexWorkerEventPollMs, 1500);
+  assert.equal(config.codexAppServerDirectTimeoutMs, 12000);
 });
 
 test("readConfig parses optional allowed chat and thread ids", () => {
@@ -144,7 +156,11 @@ test("readConfig rejects invalid enum env values", () => {
   );
   assert.throws(
     () => readTestConfig({ CODEX_TRANSPORT: "daemon" }),
-    /CODEX_TRANSPORT must be one of: sdk, app-server/
+    /CODEX_TRANSPORT must be one of: sdk, app-server-direct/
+  );
+  assert.throws(
+    () => readTestConfig({ CODEX_WORKER_MODE: "daemon" }),
+    /CODEX_WORKER_MODE must be one of: sidecar, inline/
   );
 });
 

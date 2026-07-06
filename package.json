@@ -20,7 +20,8 @@
     "openai"
   ],
   "bin": {
-    "codex-telegram-bot": "./bin/codex-telegram-bot"
+    "codex-telegram-bot": "./bin/codex-telegram-bot",
+    "codex-telegram-worker": "./bin/codex-telegram-worker"
   },
   "files": [
     ".env.example",
@@ -43,6 +44,7 @@
   },
   "scripts": {
     "start": "node src/bot.js",
+    "start:worker": "node src/worker.js",
     "check": "node --check src/*.js && node --check scripts/*.mjs && node --check test/*.mjs && npm run validate:locales",
     "lint": "eslint \"src/**/*.js\" \"scripts/**/*.mjs\" \"test/**/*.mjs\" eslint.config.js --max-warnings=0",
     "format:check": "prettier --check package.json package-lock.json .github/workflows/*.yml",

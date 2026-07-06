@@ -1,29 +1,23 @@
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
-import { promisify } from "node:util";
 import { applyCodexStreamEvent, codexStreamResult, createCodexStreamState } from "./stream.js";
 
-const execFileAsync = promisify(execFile);
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_CONNECT_TIMEOUT_MS = 5000;
-
-let daemonStartPromise = null;
 
 export function createAppServerThread({
   threadId = "",
   threadOptions = {},
   codexPath = "codex",
   codexEnv = null,
-  autostart = true,
   connectTimeoutMs = DEFAULT_CONNECT_TIMEOUT_MS
 } = {}) {
   return {
-    transport: "app-server",
+    transport: "app-server-direct",
     id: String(threadId || ""),
     threadOptions,
     codexPath,
     codexEnv,
-    autostart,
     connectTimeoutMs,
     async run(input, turnOptions = {}) {
       const { events } = await this.runStreamed(input, turnOptions);
@@ -44,12 +38,11 @@ export async function readAppServerThread({
   threadId,
   codexPath = "codex",
   codexEnv = null,
-  autostart = true,
   connectTimeoutMs = DEFAULT_CONNECT_TIMEOUT_MS,
   includeTurns = true
 } = {}) {
   if (!threadId) throw new Error("threadId is required for app-server thread/read.");
-  const client = await connectAppServer({ codexPath, codexEnv, autostart, connectTimeoutMs });
+  const client = await connectAppServer({ codexPath, codexEnv, connectTimeoutMs });
   try {
     return await client.request("thread/read", { threadId, includeTurns });
   } finally {
@@ -84,31 +77,6 @@ export function appServerThreadReadEvents(response, { threadId = "", turnId = ""
     }
   });
   return events;
-}
-
-export async function getAppServerDaemonVersion({ codexPath = "codex", codexEnv = null, timeoutMs = DEFAULT_CONNECT_TIMEOUT_MS } = {}) {
-  const { stdout } = await execFileAsync(codexPath, ["app-server", "daemon", "version"], {
-    env: mergedEnv(codexEnv),
-    timeout: timeoutMs
-  });
-  return JSON.parse(stdout);
-}
-
-export async function ensureAppServerDaemonStarted({
-  codexPath = "codex",
-  codexEnv = null,
-  timeoutMs = DEFAULT_CONNECT_TIMEOUT_MS
-} = {}) {
-  if (!daemonStartPromise) {
-    daemonStartPromise = execFileAsync(codexPath, ["app-server", "daemon", "start"], {
-      env: mergedEnv(codexEnv),
-      timeout: timeoutMs
-    }).catch((error) => {
-      daemonStartPromise = null;
-      throw error;
-    });
-  }
-  await daemonStartPromise;
 }
 
 async function runAppServerThreadStreamed(thread, input, turnOptions = {}) {
@@ -177,15 +145,12 @@ async function runAppServerThreadStreamed(thread, input, turnOptions = {}) {
   };
 }
 
-async function connectAppServer({ codexPath = "codex", codexEnv = null, autostart = true, connectTimeoutMs = DEFAULT_CONNECT_TIMEOUT_MS } = {}) {
-  if (autostart) {
-    await ensureAppServerDaemonStarted({ codexPath, codexEnv, timeoutMs: connectTimeoutMs });
-  }
-  const child = spawn(codexPath, ["app-server", "proxy"], {
+async function connectAppServer({ codexPath = "codex", codexEnv = null, connectTimeoutMs = DEFAULT_CONNECT_TIMEOUT_MS } = {}) {
+  const child = spawn(codexPath, appServerDirectArgs(), {
     env: mergedEnv(codexEnv),
     stdio: ["pipe", "pipe", "pipe"]
   });
-  const client = new JsonRpcClient(child, { requestTimeoutMs: DEFAULT_REQUEST_TIMEOUT_MS });
+  const client = new JsonRpcClient(child, { requestTimeoutMs: Math.max(connectTimeoutMs, DEFAULT_REQUEST_TIMEOUT_MS) });
   await client.request("initialize", {
     clientInfo: {
       name: "codex-telegram-bot",
@@ -199,6 +164,10 @@ async function connectAppServer({ codexPath = "codex", codexEnv = null, autostar
   });
   client.notify("initialized", {});
   return client;
+}
+
+export function appServerDirectArgs() {
+  return ["app-server", "--stdio"];
 }
 
 function appServerThreadParams(options = {}) {
@@ -263,7 +232,7 @@ class JsonRpcClient {
     child.on("error", (error) => this.fail(error));
     child.on("exit", (code, signal) => {
       if (this.closed) return;
-      this.fail(new Error(`Codex app-server proxy exited (${signal || (code ?? "unknown")}).${this.stderr ? ` ${this.stderr.trim()}` : ""}`));
+      this.fail(new Error(`Codex app-server direct process exited (${signal || (code ?? "unknown")}).${this.stderr ? ` ${this.stderr.trim()}` : ""}`));
     });
   }
 
@@ -311,7 +280,7 @@ class JsonRpcClient {
   }
 
   write(payload) {
-    if (this.closed) throw new Error("Codex app-server proxy is closed.");
+    if (this.closed) throw new Error("Codex app-server direct process is closed.");
     this.child.stdin.write(`${JSON.stringify(payload)}\n`);
   }
 
