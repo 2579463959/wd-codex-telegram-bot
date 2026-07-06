@@ -30,8 +30,8 @@ export async function appendJobEvent(paths, jobId, event) {
   const job = await readJobState(paths, jobId);
   const seq = Number(job?.lastSeq || 0) + 1;
   const payload = {
-    seq,
     ...event,
+    seq,
     at: event.at || new Date().toISOString()
   };
   await fs.appendFile(jobEventsPath(paths, jobId), `${JSON.stringify(payload)}\n`, "utf8");

@@ -16,7 +16,7 @@ test("worker store appends job events with monotonic seq", async () => {
   const { store } = await tempStore();
   await store.writeJobState({ id: "job-1", status: "accepted" });
   const first = await store.appendJobEvent("job-1", { type: "worker.job.started" });
-  const second = await store.appendJobEvent("job-1", { type: "item.completed", item: { id: "msg", type: "agent_message", text: "done" } });
+  const second = await store.appendJobEvent("job-1", { type: "item.completed", seq: 99, item: { id: "msg", type: "agent_message", text: "done" } });
   assert.equal(first.seq, 1);
   assert.equal(second.seq, 2);
   assert.deepEqual((await store.readJobEvents("job-1", { afterSeq: 1 })).map((event) => event.seq), [2]);
