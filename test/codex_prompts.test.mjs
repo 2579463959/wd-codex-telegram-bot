@@ -47,6 +47,19 @@ test("default style instructions include Traditional Chinese rich Markdown guida
   assert.match(prompt, /Telegram 友善的版面/);
 });
 
+test("default style instructions include Simplified Chinese rich Markdown guidance", () => {
+  const prompt = buildStyleInstructionPrompt({ language: "zh-cn" });
+  assert.match(prompt, /回复风格指引：/);
+  assert.match(prompt, /Telegram Rich Markdown 格式指引：/);
+  assert.match(prompt, /简体中文/);
+  assert.match(prompt, /Markdown 表格/);
+  assert.match(prompt, /inline code/);
+  assert.match(prompt, /fenced code block/);
+  assert.match(prompt, /\*\*bold\*\*/);
+  assert.match(prompt, /不要把大量内容压缩成一个密集段落/);
+  assert.match(prompt, /Telegram 友好的版面/);
+});
+
 test("custom persona prompt is combined with persistent rich Markdown guidance", () => {
   const prompt = buildStyleInstructionPrompt({
     language: "ko",

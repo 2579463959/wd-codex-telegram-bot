@@ -15,3 +15,17 @@ test("Traditional Chinese locale is loaded and selectable", () => {
   assert.equal(TELEGRAM_LANGUAGE_CODES.includes("zh"), true);
   assert.equal(textFor("zh-tw", "language"), "語言");
 });
+
+test("Simplified Chinese locale is loaded and selectable", () => {
+  assert.equal(VALID_LANGUAGES.has("zh-cn"), true);
+  const choice = LANGUAGE_CHOICES.find(({ code }) => code === "zh-cn");
+  assert.deepEqual(choice, {
+    code: "zh-cn",
+    emoji: "🇨🇳",
+    nativeName: "简体中文",
+    englishName: "Simplified Chinese",
+    telegramLanguageCode: "zh"
+  });
+  assert.equal(TELEGRAM_LANGUAGE_CODES.includes("zh"), true);
+  assert.equal(textFor("zh-cn", "language"), "语言");
+});
