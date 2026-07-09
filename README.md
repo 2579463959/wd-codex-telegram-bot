@@ -54,6 +54,11 @@ npm install
 cp .env.example .env
 ```
 
+You may commit `.env` with non-secret defaults. Put machine-local secrets and
+overrides such as `TELEGRAM_BOT_TOKEN`, `ALLOWED_USER_IDS`, or a local
+`CODEX_WORKDIR` in `.env.local`; it is loaded after `.env` and is ignored by
+Git.
+
 After creating `.env` in the current directory, you can also run the package
 command without keeping a clone:
 

@@ -1,4 +1,4 @@
-import "dotenv/config";
+import "./env.js";
 
 // Importing this module initializes state and starts the Telegram polling loop.
 

@@ -1,4 +1,4 @@
-import "dotenv/config";
+import "./env.mjs";
 
 import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";

@@ -48,24 +48,14 @@ if errorlevel 1 (
   exit /b 1
 )
 
-findstr /C:"TELEGRAM_BOT_TOKEN=123456789:replace_me" ".env" >nul
-if not errorlevel 1 (
+echo Checking required Telegram configuration...
+node scripts\check_required_config.mjs
+if errorlevel 1 (
   echo.
-  echo .env still contains the placeholder TELEGRAM_BOT_TOKEN.
-  echo Replace it with the token from Telegram @BotFather, then run this file again.
+  echo Put your real TELEGRAM_BOT_TOKEN and ALLOWED_USER_IDS in .env.local, then run this file again.
   echo.
-  start notepad ".env"
-  pause
-  exit /b 1
-)
-
-findstr /C:"ALLOWED_USER_IDS=123456789" ".env" >nul
-if not errorlevel 1 (
-  echo.
-  echo .env still contains the placeholder ALLOWED_USER_IDS.
-  echo Replace it with your numeric Telegram user id, then run this file again.
-  echo.
-  start notepad ".env"
+  if not exist ".env.local" copy ".env" ".env.local" >nul
+  start notepad ".env.local"
   pause
   exit /b 1
 )

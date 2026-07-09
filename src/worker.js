@@ -1,4 +1,4 @@
-import "dotenv/config";
+import "./env.js";
 
 import process from "node:process";
 import { readConfig } from "./config.js";
