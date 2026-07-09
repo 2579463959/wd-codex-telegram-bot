@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -60,7 +61,7 @@ export function readConfig(env = process.env, options = {}) {
     allowedChatIds,
     allowedThreadIds,
     codexWorkdir: env.CODEX_WORKDIR?.trim() || homeDir,
-    codexPath: env.CODEX_PATH?.trim() || "codex",
+    codexPath: resolveCodexPath(env.CODEX_PATH, appRoot, env),
     codexTransport,
     codexAppServerDirectTimeoutMs: parseNonnegativeInteger(env.CODEX_APP_SERVER_DIRECT_TIMEOUT_MS, 5000, "CODEX_APP_SERVER_DIRECT_TIMEOUT_MS"),
     codexWorkerMode,
@@ -258,4 +259,48 @@ function parseLiveProgressDeletePolicy(value) {
 
 function assertEnum(value, validValues, label) {
   if (!validValues.has(value)) throw new Error(`${label} must be one of: ${[...validValues].join(", ")}`);
+}
+
+function resolveCodexPath(value, appRoot, env = process.env) {
+  const raw = expandPathEnv(value?.trim() || "auto", env);
+  if (!raw || raw.toLowerCase() === "auto") return defaultLocalCodexPath(appRoot) || "codex";
+  if (path.isAbsolute(raw)) return raw;
+  if (looksLikePath(raw)) return path.resolve(appRoot, raw);
+  return raw;
+}
+
+function expandPathEnv(value, env = process.env) {
+  return String(value || "")
+    .replace(/^~(?=$|[\\/])/, env.HOME || env.USERPROFILE || "~")
+    .replace(/%([^%]+)%/g, (match, name) => env[name] ?? match)
+    .replace(/\$\{([^}]+)\}/g, (match, name) => env[name] ?? match);
+}
+
+function looksLikePath(value) {
+  return value.startsWith(".") || value.includes("/") || value.includes("\\");
+}
+
+function defaultLocalCodexPath(appRoot) {
+  const platformPackages = {
+    "linux:x64": ["codex-linux-x64", "x86_64-unknown-linux-musl", "codex"],
+    "linux:arm64": ["codex-linux-arm64", "aarch64-unknown-linux-musl", "codex"],
+    "darwin:x64": ["codex-darwin-x64", "x86_64-apple-darwin", "codex"],
+    "darwin:arm64": ["codex-darwin-arm64", "aarch64-apple-darwin", "codex"],
+    "win32:x64": ["codex-win32-x64", "x86_64-pc-windows-msvc", "codex.exe"],
+    "win32:arm64": ["codex-win32-arm64", "aarch64-pc-windows-msvc", "codex.exe"]
+  };
+  const platformPackage = platformPackages[`${process.platform}:${process.arch}`];
+  if (!platformPackage) return "";
+  const [packageName, targetTriple, binaryName] = platformPackage;
+  const candidate = path.join(
+    appRoot,
+    "node_modules",
+    "@openai",
+    packageName,
+    "vendor",
+    targetTriple,
+    "bin",
+    binaryName
+  );
+  return fs.existsSync(candidate) ? candidate : "";
 }

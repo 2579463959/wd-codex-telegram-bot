@@ -81,7 +81,9 @@ Edit `.env`:
 - `ALLOWED_CHAT_IDS`: optional comma-separated numeric chat ids. Negative group/supergroup chat ids are allowed. When set, authorized users are accepted only in these chats.
 - `ALLOWED_THREAD_IDS`: optional comma-separated positive forum topic/thread ids. When set, authorized users are accepted only in these threads.
 - `CODEX_WORKDIR`: defaults to `$HOME`
-- `CODEX_PATH`: Codex executable, default `codex`. Set this explicitly if Codex is not on `PATH`.
+- `CODEX_PATH`: Codex executable, default `auto`. `auto` uses the platform-specific Codex binary from this project's `node_modules`, which keeps copied Windows installs portable. You can still set an absolute path or a path relative to the project root.
+- `CODEX_CONFIG_FILE`: optional Codex TOML file to sync into a profile before startup, for example `%USERPROFILE%\.codex\config-hs.toml` on Windows.
+- `CODEX_PROFILE`: optional Codex profile name used with `CODEX_CONFIG_FILE`. The startup script syncs `CODEX_CONFIG_FILE` to `$CODEX_HOME/<profile>.config.toml` and patches the SDK launch command to use `codex --profile <profile> exec ...`.
 - `CODEX_TRANSPORT`: `sdk` or `app-server-direct`, default `sdk`. Keep `sdk` for normal installs. Use `app-server-direct` only when your Codex CLI supports direct `app-server --stdio`.
 - `CODEX_WORKER_MODE`: `sidecar` or `inline`, default `sidecar`. `sidecar` runs Codex turns in `codex-telegram-worker`; `inline` keeps the old single-process fallback.
 - `CODEX_WORKER_STATE_DIR`: worker job state and event log directory, default `./state/worker`

@@ -32,6 +32,22 @@ if not exist "node_modules" (
   )
 )
 
+echo Preparing Codex profile config...
+node scripts\prepare_codex_profile.mjs
+if errorlevel 1 (
+  echo Failed to prepare Codex profile config.
+  pause
+  exit /b 1
+)
+
+echo Applying Codex SDK profile support...
+node scripts\patch_codex_sdk_profile.mjs
+if errorlevel 1 (
+  echo Failed to apply Codex SDK profile support.
+  pause
+  exit /b 1
+)
+
 findstr /C:"TELEGRAM_BOT_TOKEN=123456789:replace_me" ".env" >nul
 if not errorlevel 1 (
   echo.
