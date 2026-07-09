@@ -1,4 +1,4 @@
-import "./env.mjs";
+import "dotenv/config";
 
 import fs from "node:fs";
 import os from "node:os";
