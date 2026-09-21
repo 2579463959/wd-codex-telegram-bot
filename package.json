@@ -54,13 +54,13 @@
   },
   "dependencies": {
     "@openai/codex-sdk": "0.142.5",
-    "dotenv": "^17.2.3",
-    "markdown-it": "^14.3.0",
+    "dotenv": "^18.0.0",
+    "markdown-it": "^15.0.2",
     "telegraf": "^4.16.3"
   },
   "devDependencies": {
     "@openai/codex": "0.142.5",
-    "eslint": "10.7.0",
-    "prettier": "3.9.5"
+    "eslint": "10.10.0",
+    "prettier": "3.9.8"
   }
 }
